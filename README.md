@@ -2,13 +2,6 @@
 
 A utility to erase part of a map in Project Zomboid.
 
-Created for use on **Zurrupio's Land Server**.
+[Try it out here](https://grabofus.github.io/zomboid-chunk-cleaner/)
 
-<p align="center">
-  <img src="https://github.com/xWinnetou/ZomboidChunkCleanerB42/blob/master/LogoZurrupiosLand.png" alt="Zurrupio's Land Logo" width="300">
-</p>
-
-## Community
-
-Join the Zurrupio's Land Discord server:  
-[Zurrupio's Land Discord](https://discord.gg/KVryPCUTPy)
+![image](https://user-images.githubusercontent.com/34451173/186012942-4a791a7a-8317-4805-bff9-1aad32096930.png)
