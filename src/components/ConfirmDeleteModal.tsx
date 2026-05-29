@@ -21,7 +21,6 @@ export const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = (props) => 
         if (!selection) {
             return 0;
         }
-
         return mapData.filter((point) => isPointSelected(point, selection, isSelectionInverted, excludedRegions)).length;
     }, [mapData, selection, isSelectionInverted]);
 
@@ -38,55 +37,38 @@ export const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = (props) => 
                 e.nativeEvent.stopPropagation();
             }}
         >
-            <Box
-                sx={{
-                    position: 'absolute',
-                    top: '50%',
-                    left: '50%',
-                    transform: 'translate(-50%, -50%)',
-                    width: 400,
-                    bgcolor: 'background.paper',
-                    border: '2px solid #000',
-                    boxShadow: 24,
-                    p: 4
-                }}
-            >
-                <Typography variant="h6" component="h2">
-                    Delete?
+            <Box className="modal-box">
+                <Typography variant="h6" className="modal-title">
+                    ¿Eliminar {filesToDelete} {filesToDelete === 1 ? 'celda' : 'celdas'}?
                 </Typography>
-                <Typography sx={{ mt: 2 }}>
-                    Are you sure you would like to delete {filesToDelete} chunk{filesToDelete > 1 ? 's' : ''}?
+
+                <Typography className="modal-warning">
+                    Esta acción no se puede deshacer. Asegúrate de tener una copia de seguridad.
                 </Typography>
-                <Typography sx={{ mt: 2 }}>
-                    This action is not reversible! Make sure you back up your save folder before proceeding!
-                </Typography>
-                <Button
-                    color="error"
-                    variant="contained"
-                    sx={{ mt: 2 }}
-                    onClick={() => {
-                        if (!filesToDelete) {
+
+                <div className="modal-actions">
+                    <Button
+                        className="btn-danger"
+                        variant="contained"
+                        onClick={() => {
+                            if (!filesToDelete) {
+                                onClose?.();
+                                return;
+                            }
+                            deleteMapData();
                             onClose?.();
-                            console.error('');
-                            return;
-                        }
-
-                        deleteMapData();
-
-                        onClose?.();
-                    }}
-                >
-                    Delete forever!
-                </Button>
-                <Button
-                    style={{ marginLeft: 16 }}
-                    sx={{ mt: 2 }}
-                    onClick={() => {
-                        onClose?.();
-                    }}
-                >
-                    Cancel
-                </Button>
+                        }}
+                    >
+                        Eliminar
+                    </Button>
+                    <Button
+                        className="btn-secondary"
+                        variant="outlined"
+                        onClick={() => onClose?.()}
+                    >
+                        Cancelar
+                    </Button>
+                </div>
             </Box>
         </Modal>
     );

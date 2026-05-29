@@ -11,10 +11,11 @@ export const CompatibilityAlert: React.FC = () => {
         return null;
     }
     return (
-        <Alert severity="error">
-            This tool requires browser support for <code>window.showDirectoryPicker</code>.{' '}
+        <Alert severity="error" sx={{ maxWidth: 800 }}>
+            Esta herramienta requiere un navegador compatible con <code>window.showDirectoryPicker</code>.{' '}
+            Por favor, usa <strong>Google Chrome</strong> o <strong>Microsoft Edge</strong>.{' '}
             <Link href="https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker#browser_compatibility">
-                Check compatibility on MDN
+                Ver compatibilidad en MDN
             </Link>
         </Alert>
     );

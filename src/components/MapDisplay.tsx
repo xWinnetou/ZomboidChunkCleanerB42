@@ -7,17 +7,19 @@ import type { Coordinate, Region } from '../types';
 import { expandRegion, isChildOf, isPointSelected } from '../utils';
 
 enum Colors {
-    SAFE_HOUSE = 'hsla(100, 100%, 76%, 70%)',
-    SAFE_HOUSE_SURROUNDING = 'hsla(100, 100%, 76%, 40%)',
+    SAFE_HOUSE = 'hsla(30, 100%, 50%, 0.3)', // Orange transparent fill
+    SAFE_HOUSE_BORDER = 'hsla(30, 100%, 50%, 1)', // Solid Orange Border for safehouse
+    SAFE_HOUSE_SURROUNDING = 'hsla(0, 100%, 50%, 0.1)', // Very light red for padding fill
+    SAFE_HOUSE_PADDING_BORDER = 'hsla(0, 100%, 50%, 1)', // Solid Red Border for padding
     DELETE = 'hsla(0, 100%, 76%, 70%)',
     DEFAULT = 'hsla(41, 49%, 76%, 70%)',
-    TEXT_BACKGROUND = 'rgba(0, 0, 0, 0.3)',
+    TEXT_BACKGROUND = 'rgba(0, 0, 0, 0.7)',
     TEXT_COLOR = '#fff'
 }
 
 export const MapDisplay: React.FC = () => {
     const {
-        actions: { selectRegion, unselectRegion },
+        actions: { selectRegion, unselectRegion, setZoomLevel },
         state: {
             excludedRegions,
             isMapDisplayed,
@@ -138,18 +140,31 @@ export const MapDisplay: React.FC = () => {
         if (isSafeHouseProtectionEnabled) {
             // Draw safe houses
             for (const safeHouse of safeHouses) {
-                const { region, owner } = safeHouse;
+                const { region, owner, title } = safeHouse;
 
-                const tooltip = `${owner}'s safehouse`;
-
-                context.fillStyle = Colors.SAFE_HOUSE;
-                fillRectRegion(region);
-
+                // Draw Padding Area (red border)
                 const expandedRegion = expandRegion(region, safeHousePadding);
                 context.fillStyle = Colors.SAFE_HOUSE_SURROUNDING;
                 fillRectRegion(expandedRegion);
 
-                writeTextAboveRegion(expandedRegion, tooltip);
+                // Draw Padding Border (red)
+                context.strokeStyle = Colors.SAFE_HOUSE_PADDING_BORDER;
+                context.lineWidth = 2;
+                const [{ x: px1, y: py1 }, { x: px2, y: py2 }] = expandedRegion;
+                context.strokeRect((px1 - minX) * zoomLevel, (py1 - minY) * zoomLevel, (px2 - px1) * zoomLevel, (py2 - py1) * zoomLevel);
+
+                // Draw Safehouse Area
+                context.fillStyle = Colors.SAFE_HOUSE;
+                fillRectRegion(region);
+
+                // Draw Safehouse Border
+                context.strokeStyle = Colors.SAFE_HOUSE_BORDER;
+                context.lineWidth = 2;
+                const [{ x: x1, y: y1 }, { x: x2, y: y2 }] = region;
+                context.strokeRect((x1 - minX) * zoomLevel, (y1 - minY) * zoomLevel, (x2 - x1) * zoomLevel, (y2 - y1) * zoomLevel);
+
+                // Draw Title (use parsed title, not generic)
+                writeTextAboveRegion(region, title || `${owner}'s safehouse`);
             }
         }
     }, [
@@ -183,13 +198,21 @@ export const MapDisplay: React.FC = () => {
         const { minX: offsetX, minY: offsetY } = tileInfo;
 
         const getMousePosition = (e: MouseEvent): Coordinate => {
-            const canvasRect = canvas.getBoundingClientRect();
-            const x = e.clientX - Math.floor(canvasRect.left);
-            const y = e.clientY - Math.floor(canvasRect.top);
-            return {
-                x: Math.floor(x / zoomLevel + offsetX),
-                y: Math.floor(y / zoomLevel + offsetY)
-            };
+            if (!mapCanvasRef.current) return { x: 0, y: 0 };
+
+            const rect = mapCanvasRef.current.getBoundingClientRect();
+            // Calculate absolute position relative to canvas
+            const scaleX = mapCanvasRef.current.width / rect.width;
+            const scaleY = mapCanvasRef.current.height / rect.height;
+
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+
+            // Adjust to map coordinates
+            const mapX = (x / zoomLevel) + offsetX;
+            const mapY = (y / zoomLevel) + offsetY;
+
+            return { x: mapX, y: mapY };
         };
 
         const draw = () => {
@@ -219,11 +242,20 @@ export const MapDisplay: React.FC = () => {
                 context.strokeRect(rectX, rectY, rectWidth, rectHeight);
             }
 
+            // Draw real tile coordinates in top-left corner (B42: chunk × 8)
+            const chunkX = Math.floor(mousePos.x);
+            const chunkY = Math.floor(mousePos.y);
+            const tileX = chunkX * 8;  // B42 uses 8x8 tile chunks
+            const tileY = chunkY * 8;
+            const text = `X: ${tileX}, Y: ${tileY}`;
+
             context.fillStyle = Colors.TEXT_BACKGROUND;
-            const { width } = context.measureText(`X: ${mouseX} Y: ${mouseY}`);
+            const { width } = context.measureText(text);
             context.fillRect(0, 0, width + 12, 18);
             context.fillStyle = Colors.TEXT_COLOR;
-            context.fillText(`X: ${mouseX} Y: ${mouseY}`, 4, 12);
+            context.font = '12px Segoe UI';
+            context.textBaseline = 'top';
+            context.fillText(text, 4, 4);
         };
 
         const handleMouseMove = (e: MouseEvent) => {
@@ -281,14 +313,77 @@ export const MapDisplay: React.FC = () => {
         document.body.addEventListener('mousedown', handleMouseDown);
         document.body.addEventListener('mouseup', handleMouseUp);
 
+        // Mouse wheel zoom handler
+        const handleWheel = (e: WheelEvent) => {
+            if (!(e.target instanceof HTMLElement) || !mapRootRef.current || !isChildOf(e.target, mapRootRef.current)) {
+                return;
+            }
+            e.preventDefault();
+
+            const zoomLevels = [0.5, 1, 2, 4, 8];
+            const currentIndex = zoomLevels.indexOf(zoomLevel);
+
+            if (e.deltaY < 0 && currentIndex < zoomLevels.length - 1) {
+                setZoomLevel(zoomLevels[currentIndex + 1]);
+            } else if (e.deltaY > 0 && currentIndex > 0) {
+                setZoomLevel(zoomLevels[currentIndex - 1]);
+            }
+        };
+
+        // Ctrl+C to copy coordinates
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.ctrlKey && e.key === 'c' && mousePos.x !== 0 && mousePos.y !== 0) {
+                const chunkX = Math.floor(mousePos.x);
+                const chunkY = Math.floor(mousePos.y);
+                const tileX = chunkX * 8;
+                const tileY = chunkY * 8;
+                const coordText = `${tileX}, ${tileY}`;
+
+                navigator.clipboard.writeText(coordText).then(() => {
+                    // Show temporary notification
+                    const notification = document.createElement('div');
+                    notification.textContent = `📋 Coordenadas copiadas: ${coordText}`;
+                    notification.style.cssText = `
+                        position: fixed;
+                        top: 20px;
+                        left: 50%;
+                        transform: translateX(-50%);
+                        background: rgba(76, 175, 80, 0.95);
+                        color: white;
+                        padding: 12px 24px;
+                        border-radius: 8px;
+                        font-family: Segoe UI, sans-serif;
+                        font-weight: bold;
+                        z-index: 9999;
+                        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                        animation: fadeIn 0.2s ease;
+                    `;
+                    document.body.appendChild(notification);
+
+                    setTimeout(() => {
+                        notification.style.opacity = '0';
+                        notification.style.transition = 'opacity 0.3s ease';
+                        setTimeout(() => notification.remove(), 300);
+                    }, 2000);
+                }).catch(err => {
+                    console.error('Error al copiar:', err);
+                });
+            }
+        };
+
+        mapRootRef.current?.addEventListener('wheel', handleWheel, { passive: false });
+        document.addEventListener('keydown', handleKeyDown);
+
         draw();
 
         return () => {
             document.body.removeEventListener('mousemove', handleMouseMove);
             document.body.removeEventListener('mousedown', handleMouseDown);
             document.body.removeEventListener('mouseup', handleMouseUp);
+            mapRootRef.current?.removeEventListener('wheel', handleWheel);
+            document.removeEventListener('keydown', handleKeyDown);
         };
-    }, [tileInfo, selectRegion, unselectRegion, zoomLevel]);
+    }, [tileInfo, selectRegion, unselectRegion, zoomLevel, setZoomLevel]);
 
     if (!mapData.length) {
         return null;
@@ -318,37 +413,40 @@ export const MapDisplay: React.FC = () => {
                             height: zoomLevel * (tileInfo.maxY - tileInfo.minY),
                             overflow: 'hidden',
                             gridArea: '1 / 1',
-                            backgroundColor: 'rgba(0,0,0,0.2)'
+                            backgroundColor: 'rgba(0,0,0,0.2)',
+                            position: 'relative'
                         }}
                     >
-                        <div
+                        {/* Single map image background - B42 */}
+                        {/* Image: 19500x15600px, top-left at tile (95, 100) */}
+                        {/* Scale: needs to match chunk coordinates. 
+                            If image covers ~76 cells wide (19500px), and B42 uses 256 tiles/cell:
+                            19500 / (76 * 256) ≈ 1 pixel per tile
+                            Actually let's use: 19500 / (76 * 32 chunks * 8 tiles) ≈ 1px/tile
+                            The image likely uses 1 pixel = 1 tile, so at zoom=1, we scale accordingly */}
+                        <img
+                            src="./assets/map_b42.png"
+                            alt="B42 Map"
                             style={{
-                                marginLeft: zoomLevel * -(tileInfo.minX % 100),
-                                marginTop: zoomLevel * -(tileInfo.minY % 100),
-                                display: 'grid',
-                                gridTemplateColumns: `repeat(${tileInfo.columnCount}, ${zoomLevel * 100}px)`,
-                                zIndex: 0
+                                position: 'absolute',
+                                // Map image offset - adjust these values to align the map:
+                                // DECREASE first number = move RIGHT, INCREASE = move LEFT
+                                // DECREASE second number = move DOWN, INCREASE = move UP
+                                left: zoomLevel * ((0 / 8) - tileInfo.minX),
+                                top: zoomLevel * ((0 / 8) - tileInfo.minY),
+                                width: 19500 * (zoomLevel / 8),
+                                height: 15600 * (zoomLevel / 8),
+                                imageRendering: 'pixelated',
+                                opacity: 0.8,
+                                pointerEvents: 'none'
                             }}
-                        >
-                            {tileInfo.tiles.map((id) => (
-                                <img
-                                    key={id}
-                                    className="tile"
-                                    src={`./assets/map_${id}.png`}
-                                    onLoad={(e) => {
-                                        e.currentTarget.classList.add('loaded');
-                                    }}
-                                    width={zoomLevel * 100}
-                                    height={zoomLevel * 100}
-                                    loading="lazy"
-                                ></img>
-                            ))}
-                        </div>
+                            loading="eager"
+                        />
                     </div>
                 )}
                 <canvas
                     ref={mapCanvasRef}
-                    style={{ zIndex: 1, gridArea: '1 / 1', backgroundColor: isMapDisplayed ? undefined : 'hsla(41, 30%, 61%, 1)' }}
+                    style={{ zIndex: 1, gridArea: '1 / 1', backgroundColor: isMapDisplayed ? undefined : '#2a2a2a' }}
                 ></canvas>
                 <canvas ref={selectionCanvasRef} style={{ zIndex: 2, gridArea: '1 / 1' }}></canvas>
             </div>
