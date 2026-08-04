@@ -26,11 +26,6 @@ interface DeleteFiles {
     deleteOptions: DeleteOptions;
 }
 
-/**
- * Pide permiso de escritura explícitamente. Sin esto, `removeEntry` falla con
- * NotAllowedError y (antes) el fallo se tragaba en silencio: parecía que había
- * borrado y no había borrado nada.
- */
 const pickSaveDirectory = async (): Promise<FileSystemDirectoryHandle> => {
     const directoryHandle = await window.showDirectoryPicker({ id: 'pz-save', mode: 'readwrite' });
 

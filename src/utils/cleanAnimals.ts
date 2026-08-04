@@ -1,49 +1,6 @@
 import { TILES_PER_CHUNK } from '../constants';
 import type { Coordinate } from '../types';
 
-/*
- * ---------------------------------------------------------------------------
- * map_animals.bin — animales salvajes persistentes
- * ---------------------------------------------------------------------------
- *
- * Los animales de B42 NO viven sólo dentro de los chunks: hay una población
- * global en map_animals.bin. Por eso, borrando sólo map/X/Y.bin, los animales
- * reaparecían en la zona limpiada.
- *
- * Formato (verificado byte a byte contra un save de 42.20, versión 249):
- *
- *   "ZONE"                         4
- *   int32  version                 = 249
- *   int32  sectionCount            = 2
- *   int32  nameLength              = 6
- *   char[] name                    = "Animal"
- *   int32  animalCount
- *   por cada animal (longitud variable):
- *       int32  ?
- *       int32  x, int32 y          (en TILES)
- *       byte   z
- *       int32  ?, int32 ?
- *       byte   ? (0x02)
- *       int16  ?
- *       byte   n                   nº de int32 de la ruta
- *       int32  ruta[n]
- *       byte[11] ?
- *       byte[16] uuid
- *       string estado              ("Eat", "Sleep", "Follow")
- *       string objetivo            (vacío salvo al seguir a otro animal)
- *       byte[2] ?
- *   int32  relationCount
- *   por cada relación: int32, int32, uuid, uuid   (40 bytes fijos)
- *
- * Las relaciones referencian animales por UUID (no por índice), así que se
- * pueden borrar animales sueltos siempre que se tiren también las relaciones
- * que los mencionan.
- *
- * Antes de escribir nada se comprueba que volver a serializar el fichero SIN
- * cambios produce exactamente los mismos bytes. Si no coincide, no se toca el
- * fichero: es preferible dejar animales de más que romper la partida.
- */
-
 interface AnimalRecord {
     start: number;
     end: number;
@@ -59,7 +16,6 @@ interface RelationRecord {
 }
 
 interface ParsedAnimals {
-    /** Todo lo anterior a `animalCount`, se copia tal cual. */
     headerEnd: number;
     animals: AnimalRecord[];
     relations: RelationRecord[];
@@ -207,10 +163,6 @@ const isSameBytes = (a: Uint8Array, b: Uint8Array) => {
     return true;
 };
 
-/**
- * Borra de map_animals.bin los animales que estén en chunks eliminados.
- * Devuelve cuántos ha quitado, o `null` si no se ha tocado el fichero.
- */
 export const cleanAnimals = async (
     root: FileSystemDirectoryHandle,
     deletedChunks: Coordinate[],
@@ -226,7 +178,7 @@ export const cleanAnimals = async (
         fileHandle = await root.getFileHandle('map_animals.bin', { create: false });
         buffer = await (await fileHandle.getFile()).arrayBuffer();
     } catch {
-        return null; // la partida no tiene animales guardados
+        return null;
     }
 
     let parsed: ParsedAnimals;
@@ -237,7 +189,6 @@ export const cleanAnimals = async (
         return null;
     }
 
-    // Garantía: si no sabemos reconstruir el fichero tal cual, no lo escribimos.
     const rebuilt = serialize(buffer, parsed, parsed.animals, parsed.relations);
     if (!isSameBytes(rebuilt, new Uint8Array(buffer))) {
         errors.push('map_animals.bin no se ha tocado: la reconstrucción de prueba no coincide con el original.');

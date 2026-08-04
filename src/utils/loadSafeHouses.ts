@@ -1,48 +1,17 @@
 import { TILES_PER_CHUNK } from '../constants';
 import type { SafeHouse, SafeHouseScan } from '../types';
 
-/*
- * ---------------------------------------------------------------------------
- * Lectura de refugios (safehouses) desde map_meta.bin
- * ---------------------------------------------------------------------------
- *
- * Estructura verificada contra un save real de Build 42.20 (versión de mundo 249):
- *
- *   "META"                                    4 bytes
- *   int32   version                           = 249 en B42
- *   int32   minX, minY, maxX, maxY            (-250, -250, 250, 250)
- *   por cada celda de minX..maxX / minY..maxY:
- *       int32 roomDefCount;     roomDefCount     * 10 bytes
- *       int32 buildingDefCount; buildingDefCount * 23 bytes   (en B41 eran 19)
- *   int32   safeHouseCount
- *   por cada refugio:
- *       int32  x, y, w, h                     (en TILES)
- *       string owner
- *       ... cola de longitud variable: lista de jugadores, marcas de tiempo,
- *           título, población ("Riverside, KY"), puntos de reaparición ...
- *   int32   0, int32 0
- *   int32   zoneCount
- *   por cada zona: double, int32 x,y,z,w,h, string type, string name, int32
- *   ...
- *
- * Las cadenas son [int16 longitud][bytes].
- *
- * La cola de cada refugio cambia entre parches: observada de 8 bytes con la
- * lista de jugadores vacía y de 16 con un jugador, que no cuadra con ninguna
- * lectura fija de esos campos. Por eso NO se interpreta: de cada refugio se
- * leen sólo x/y/w/h y el propietario (que van siempre delante) y para saber
- * dónde acaba el registro se prueban offsets hasta que encaja el refugio
- * siguiente y, al final, la lista de zonas.
- *
- * Ese anclaje en la lista de zonas es lo que hace fiable la lectura: si el
- * formato cambia de verdad, no encajará nada, y se avisa al usuario en vez de
- * borrar con la protección de refugios rota.
- */
-
 const MAX_SAFE_HOUSES = 20000;
 const MAX_ZONES = 200000;
 const MAX_STRING_LENGTH = 1000;
 const MAX_DEF_COUNT = 100000;
+const MAX_RECORD_TAIL = 8192;
+const MAX_SEARCH_STEPS = 200000;
+
+const KNOWN_GRID_SIZES: [number, number][] = [
+    [10, 23],
+    [10, 19]
+];
 
 class Cursor {
     public offset = 0;
@@ -105,8 +74,7 @@ class Cursor {
         if (length < 0 || length > MAX_STRING_LENGTH) {
             throw new Error(`Longitud de cadena inválida (${length}) en ${this.offset - 2}`);
         }
-        const value = this.ascii(length);
-        return value;
+        return this.ascii(length);
     }
 }
 
@@ -118,6 +86,16 @@ interface RawSafeHouse {
     owner: string;
     players: string[];
     title: string;
+}
+
+interface SafeHouseHead extends RawSafeHouse {
+    end: number;
+}
+
+interface StructuredParse {
+    safeHouses: RawSafeHouse[];
+    version: number;
+    warnings: string[];
 }
 
 const isPlausibleName = (value: string) => {
@@ -133,16 +111,6 @@ const isPlausibleName = (value: string) => {
     return true;
 };
 
-interface SafeHouseHead extends RawSafeHouse {
-    /** Offset justo detrás del nombre del propietario. */
-    end: number;
-}
-
-/**
- * Lee la cabecera de un refugio: x, y, w, h y propietario. Estos campos van
- * siempre al principio del registro y no dependen de la versión, así que son
- * los únicos de los que nos fiamos.
- */
 const readSafeHouseHead = (cursor: Cursor, offset: number): SafeHouseHead | undefined => {
     try {
         cursor.seek(offset);
@@ -166,14 +134,6 @@ const readSafeHouseHead = (cursor: Cursor, offset: number): SafeHouseHead | unde
     }
 };
 
-/**
- * Detrás de la lista de refugios va la lista de zonas. Si consigue leerse
- * entera, es que los refugios se han leído en la posición correcta.
- *
- * Esto es lo que ancla todo el parseo: no hace falta entender los campos del
- * medio de cada refugio (que cambian entre parches, p.ej. al añadir jugadores
- * a la lista del refugio), basta con encontrar el punto donde encaja el resto.
- */
 const isZoneListAt = (cursor: Cursor, offset: number): boolean => {
     try {
         cursor.seek(offset);
@@ -187,9 +147,9 @@ const isZoneListAt = (cursor: Cursor, offset: number): boolean => {
 
         for (let i = 0; i < zoneCount; i++) {
             cursor.float64();
-            cursor.skip(20); // x, y, z, w, h
-            cursor.string(); // tipo, p.ej. "AnimalZone"
-            cursor.string(); // nombre
+            cursor.skip(20);
+            cursor.string();
+            cursor.string();
             cursor.int32();
         }
         return true;
@@ -214,16 +174,6 @@ const walkCellGrid = (cursor: Cursor, roomDefSize: number, buildingDefSize: numb
     }
 };
 
-/** Bytes máximos que puede ocupar la cola desconocida de un refugio. */
-const MAX_RECORD_TAIL = 8192;
-/** Tope de exploración, para que un fichero raro no cuelgue el navegador. */
-const MAX_SEARCH_STEPS = 200000;
-
-/**
- * Lee la lista de refugios que empieza en `gridEnd`. De cada registro sólo se
- * interpreta la cabecera; para saber dónde acaba se prueban offsets hasta que
- * encaja el registro siguiente (o, en el último, la lista de zonas).
- */
 const parseSafeHouseList = (cursor: Cursor, gridEnd: number): RawSafeHouse[] | undefined => {
     cursor.seek(gridEnd);
     let count: number;
@@ -269,12 +219,6 @@ const parseSafeHouseList = (cursor: Cursor, gridEnd: number): RawSafeHouse[] | u
     return search(gridEnd + 4, 0, []);
 };
 
-/** Combinaciones (roomDef, buildingDef) conocidas, de más a menos probable. */
-const KNOWN_GRID_SIZES: [number, number][] = [
-    [10, 23], // Build 42 (versión de mundo 249), verificado en 42.20
-    [10, 19] // Build 41 (versión >= 194)
-];
-
 const buildGridSizeCandidates = (): [number, number][] => {
     const candidates = [...KNOWN_GRID_SIZES];
     const seen = new Set(candidates.map(([room, building]) => `${room}_${building}`));
@@ -289,12 +233,6 @@ const buildGridSizeCandidates = (): [number, number][] => {
     }
     return candidates;
 };
-
-interface StructuredParse {
-    safeHouses: RawSafeHouse[];
-    version: number;
-    warnings: string[];
-}
 
 const parseStructured = (buffer: ArrayBuffer): StructuredParse => {
     const cursor = new Cursor(buffer);
@@ -341,11 +279,6 @@ const parseStructured = (buffer: ArrayBuffer): StructuredParse => {
     throw new Error('No se ha podido localizar la lista de refugios dentro de map_meta.bin');
 };
 
-/**
- * Plan B: barrido byte a byte buscando algo con forma de refugio.
- * Es lo que hacía la versión anterior de la herramienta. Se conserva sólo como
- * red de seguridad porque genera falsos positivos y puede perder refugios.
- */
 const scanHeuristic = (buffer: ArrayBuffer): RawSafeHouse[] => {
     const view = new DataView(buffer);
     const size = buffer.byteLength;

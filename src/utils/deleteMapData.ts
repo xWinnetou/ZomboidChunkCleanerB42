@@ -5,24 +5,6 @@ import { cleanAnimals } from './cleanAnimals';
 import { isPointSelected } from './isPointSelected';
 import { partition } from './partition';
 
-/*
- * Estructura de un save de Build 42 (verificado en 42.20):
- *
- *   map/<chunkX>/<chunkY>.bin              chunk del mundo (8x8 tiles)
- *   blam/<chunkX>/<chunkY>.bin             copia de un chunk que falló el CRC
- *   blam/<chunkX>/<chunkY>_error.txt       el stacktrace de ese fallo
- *   isoregiondata/datachunk_<cX>_<cY>.bin  datos de región, por chunk
- *   chunkdata/chunkdata_<celda>.bin        agregados por celda de 32x32 chunks
- *   apop/apop_<celda>.bin                  (256x256 tiles)
- *   metagrid/metacell_<celda>.bin
- *   zpop/zpop_<celda>.bin
- *   vehicles.db                            SQLite; wx/wy son coordenadas de CHUNK
- *   map_animals.bin                        población de animales salvajes, global
- *
- * En B41 los chunks eran ficheros planos map_X_Y.bin en la raíz; se siguen
- * borrando por si se abre un save antiguo.
- */
-
 const BATCH_SIZE = 64;
 
 const getCellKey = (x: number, y: number) => `${Math.floor(x / CHUNKS_PER_CELL)}_${Math.floor(y / CHUNKS_PER_CELL)}`;
@@ -35,14 +17,12 @@ const getDirectory = async (root: FileSystemDirectoryHandle, name: string) => {
     }
 };
 
-/** Devuelve `true` si el fichero existía y se ha borrado. */
 const removeEntry = async (directory: FileSystemDirectoryHandle, name: string, errors: string[]) => {
     try {
         await directory.removeEntry(name);
         return true;
     } catch (e) {
         const error = e as DOMException;
-        // NotFoundError es lo normal: no todos los chunks tienen todos los ficheros.
         if (error?.name && error.name !== 'NotFoundError') {
             errors.push(`${name}: ${error.name} ${error.message ?? ''}`.trim());
         }
@@ -57,7 +37,6 @@ const runBatched = async <T>(items: T[], run: (item: T) => Promise<void>, onBatc
     }
 };
 
-/** Borra `<folder>/<x>/<y>.bin` (y los ficheros extra que indique `extraNames`). */
 const deleteNested = async (
     root: FileSystemDirectoryHandle,
     folder: string,
@@ -96,7 +75,6 @@ const deleteNested = async (
             }
         });
 
-        // Si la carpeta X se queda vacía, el juego no la vuelve a usar.
         await removeEntry(directory, x.toString(), []);
     }
     return deleted;
@@ -135,11 +113,9 @@ const deleteVehicles = async (root: FileSystemDirectoryHandle, points: Coordinat
             db.run('COMMIT');
 
             if (removed === 0) {
-                // No hay nada que cambiar: mejor no reescribir el fichero.
                 return 0;
             }
 
-            // Copia de seguridad antes de sobrescribir.
             const backupHandle = await root.getFileHandle('vehicles.db.bak', { create: true });
             const backupWritable = await backupHandle.createWritable();
             await backupWritable.write(original);
@@ -150,7 +126,6 @@ const deleteVehicles = async (root: FileSystemDirectoryHandle, points: Coordinat
             await writable.write(data);
             await writable.close();
 
-            // El journal describe la versión anterior del fichero.
             await removeEntry(root, 'vehicles.db-journal', []);
 
             return removed;
@@ -160,7 +135,7 @@ const deleteVehicles = async (root: FileSystemDirectoryHandle, points: Coordinat
     } catch (e) {
         const error = e as Error;
         if ((e as DOMException)?.name === 'NotFoundError') {
-            return null; // el save no tiene vehicles.db
+            return null;
         }
         errors.push(`vehicles.db: ${error.message}`);
         return null;
@@ -199,7 +174,6 @@ export const deleteMapData = (
 
         const progress = (phase: string, current: number, total: number) => onProgress?.({ phase, current, total });
 
-        // 1. Chunks planos de B41 en la raíz (map_X_Y.bin).
         progress('Chunks (formato B41)', 0, pointsToDelete.length);
         await runBatched(
             pointsToDelete,
@@ -211,19 +185,16 @@ export const deleteMapData = (
             (done) => progress('Chunks (formato B41)', done, pointsToDelete.length)
         );
 
-        // 2. Chunks de B42: map/X/Y.bin
         progress('Chunks del mapa', 0, pointsToDelete.length);
         report.chunks += await deleteNested(directoryHandle, 'map', pointsToDelete, errors);
         progress('Chunks del mapa', pointsToDelete.length, pointsToDelete.length);
 
-        // 3. Chunks corruptos que el juego apartó en blam/
         if (options.corruptedChunks) {
             progress('Chunks corruptos (blam)', 0, pointsToDelete.length);
             report.corruptedChunks += await deleteNested(directoryHandle, 'blam', pointsToDelete, errors, (y) => [`${y}_error.txt`]);
             progress('Chunks corruptos (blam)', pointsToDelete.length, pointsToDelete.length);
         }
 
-        // 4. isoregiondata/datachunk_X_Y.bin
         if (options.isoRegionData) {
             const isoDirectory = await getDirectory(directoryHandle, 'isoregiondata');
             if (isoDirectory) {
@@ -240,7 +211,6 @@ export const deleteMapData = (
             }
         }
 
-        // 5. Agregados por celda, sólo si la celda entera se queda sin chunks.
         if (options.aggregates) {
             progress('Agregados por celda', 0, emptiedCells.length);
             const aggregates: [string, (cell: string) => string][] = [
@@ -263,9 +233,6 @@ export const deleteMapData = (
             progress('Agregados por celda', emptiedCells.length, emptiedCells.length);
         }
 
-        // 6. Población de las celdas limpiadas sólo a medias. Sólo apop/zpop:
-        // son cachés de repoblación, el juego los regenera. No se tocan
-        // chunkdata/metagrid porque describen la estructura de la celda.
         if (options.resetPartialPopulation && partialCells.length) {
             progress('Repoblación de celdas parciales', 0, partialCells.length);
             for (const [folder, prefix] of [
@@ -285,14 +252,12 @@ export const deleteMapData = (
             progress('Repoblación de celdas parciales', partialCells.length, partialCells.length);
         }
 
-        // 7. vehicles.db
         if (options.vehicles) {
             progress('Vehículos', 0, 1);
             report.vehicles = await deleteVehicles(directoryHandle, pointsToDelete, errors);
             progress('Vehículos', 1, 1);
         }
 
-        // 8. map_animals.bin — los animales salvajes no viven dentro del chunk.
         if (options.animals) {
             progress('Animales', 0, 1);
             report.animals = await cleanAnimals(directoryHandle, pointsToDelete, errors);

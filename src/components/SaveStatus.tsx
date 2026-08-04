@@ -3,7 +3,6 @@ import { Alert, AlertTitle, LinearProgress } from '@mui/material';
 import { B42_WORLD_VERSION } from '../constants';
 import { useAppContext } from '../hooks';
 
-/** Avisos sobre la partida cargada: versión, fiabilidad de los refugios, errores. */
 export const SaveStatus: React.FC = () => {
     const {
         state: {

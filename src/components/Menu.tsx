@@ -78,7 +78,6 @@ export const Menu: React.FC<MenuProps> = (props) => {
 
     return (
         <div className="menu-container">
-            {/* Main Actions */}
             <div className="menu-row">
                 <Button className="btn-primary" variant="contained" disabled={isDeleting} onClick={() => loadMapData()}>
                     📂 Cargar Partida
@@ -93,7 +92,6 @@ export const Menu: React.FC<MenuProps> = (props) => {
                 )}
             </div>
 
-            {/* Options Row */}
             <div className="menu-row options-row">
                 <FormControlLabel
                     control={<Checkbox checked={isMapDisplayed} onChange={(_, value) => toggleMap(value)} size="small" />}
@@ -119,7 +117,6 @@ export const Menu: React.FC<MenuProps> = (props) => {
                 </Tooltip>
             </div>
 
-            {/* Qué se borra además de los chunks */}
             <div className="menu-row options-row">
                 <span className="padding-label">Además de los chunks, borrar:</span>
                 {DELETE_OPTION_LABELS.map(({ key, label, hint }) => (
@@ -134,7 +131,6 @@ export const Menu: React.FC<MenuProps> = (props) => {
                 ))}
             </div>
 
-            {/* Safehouse Padding Slider */}
             <Collapse in={isSafeHouseProtectionEnabled}>
                 <div className="padding-control">
                     <span className="padding-label">🛡️ Relleno de seguridad:</span>
@@ -164,7 +160,6 @@ export const Menu: React.FC<MenuProps> = (props) => {
                 </div>
             </Collapse>
 
-            {/* Guide */}
             <Collapse in={showInfo}>
                 <div className="guide-box">
                     <div className="guide-grid">
