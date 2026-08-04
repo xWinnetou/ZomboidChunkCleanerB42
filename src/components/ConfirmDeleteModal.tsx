@@ -37,9 +37,9 @@ export const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = (props) => 
         deleteOptions.isoRegionData && 'datos de región',
         deleteOptions.aggregates && 'agregados de celda',
         deleteOptions.vehicles && 'vehículos en esos chunks',
-        deleteOptions.animals && 'animales salvajes en esos chunks',
-        deleteOptions.corruptedChunks && 'chunks corruptos (blam)',
-        deleteOptions.resetPartialPopulation && 'repoblación de las celdas parciales'
+        deleteOptions.animals && 'animales errantes en esos chunks',
+        deleteOptions.resetPopulation && 'repoblación de zombis y animales (celdas sin refugio)',
+        deleteOptions.corruptedChunks && 'chunks corruptos (blam)'
     ].filter(Boolean) as string[];
 
     const isProtectionUnreliable = !isSafeHouseProtectionEnabled || safeHouseScanMethod !== 'structured';
@@ -73,14 +73,11 @@ export const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = (props) => 
                 {isSafeHouseProtectionEnabled ? (
                     <Alert severity={safeHouseScanMethod === 'structured' ? 'info' : 'warning'} sx={{ mb: 2 }}>
                         Protegiendo <strong>{safeHouses.length}</strong> refugio(s)
-                        {safeHouseScanMethod !== 'structured' && (
-                            <> — detectados de forma aproximada, pueden faltar refugios.</>
-                        )}
+                        {safeHouseScanMethod !== 'structured' && <> — detectados de forma aproximada, pueden faltar refugios.</>}
                     </Alert>
                 ) : (
                     <Alert severity="error" sx={{ mb: 2 }}>
-                        La protección de refugios está <strong>desactivada</strong>. Se borrarán también las bases
-                        reclamadas por jugadores.
+                        La protección de refugios está <strong>desactivada</strong>. Se borrarán también las bases reclamadas por jugadores.
                     </Alert>
                 )}
 

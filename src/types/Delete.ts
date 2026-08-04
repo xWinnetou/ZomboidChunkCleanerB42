@@ -4,7 +4,7 @@ export interface DeleteOptions {
     vehicles: boolean;
     animals: boolean;
     corruptedChunks: boolean;
-    resetPartialPopulation: boolean;
+    resetPopulation: boolean;
 }
 
 export const DEFAULT_DELETE_OPTIONS: DeleteOptions = {
@@ -13,7 +13,7 @@ export const DEFAULT_DELETE_OPTIONS: DeleteOptions = {
     vehicles: true,
     animals: true,
     corruptedChunks: true,
-    resetPartialPopulation: false
+    resetPopulation: true
 };
 
 export interface DeleteProgress {

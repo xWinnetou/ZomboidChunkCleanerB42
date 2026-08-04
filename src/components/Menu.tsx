@@ -23,22 +23,23 @@ const DELETE_OPTION_LABELS: { key: keyof DeleteOptions; label: string; hint: str
     },
     {
         key: 'animals',
-        label: '🐄 Animales',
+        label: '🐄 Animales errantes',
         hint:
-            'Los animales salvajes se guardan en map_animals.bin, fuera de los chunks: sin esto reaparecen ' +
-            'en la zona limpiada. Deja una copia en map_animals.bin.bak.'
+            'Animales de map_animals.bin: la población que va suelta por el mapa, fuera de los chunks. ' +
+            'Deja una copia en map_animals.bin.bak.'
+    },
+    {
+        key: 'resetPopulation',
+        label: '♻️ Repoblar zombis y animales',
+        hint:
+            'Los animales asentados y los zombis virtuales viven en apop/ y zpop/, por celda de 32x32 chunks ' +
+            '(256x256 tiles), no dentro del chunk. Sin esto siguen ahí después del borrado. Se salta las celdas ' +
+            'que tocan un refugio protegido, así que las bases no pierden su ganado.'
     },
     {
         key: 'corruptedChunks',
         label: '💥 Chunks corruptos',
         hint: 'Carpeta blam/: copias de chunks que fallaron el CRC, junto a sus ficheros _error.txt.'
-    },
-    {
-        key: 'resetPartialPopulation',
-        label: '♻️ Repoblar celdas parciales',
-        hint:
-            'Borra apop/ y zpop/ también en las celdas que sólo se limpian a medias, para que zombis y animales ' +
-            'se regeneren desde cero. Afecta a la celda entera (256x256 tiles), incluida la parte del refugio.'
     }
 ];
 

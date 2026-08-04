@@ -177,7 +177,7 @@ body {
 
 .guide-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 20px;
 }
 
@@ -186,6 +186,8 @@ body {
   align-items: flex-start;
   gap: 12px;
   padding: 16px;
+  min-width: 0;
+  overflow: hidden;
   background: rgba(255, 255, 255, 0.05);
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.05);
@@ -200,7 +202,7 @@ body {
 .guide-icon {
   font-size: 1.5rem;
   background: rgba(255, 255, 255, 0.1);
-  width: 40px;
+  flex: 0 0 40px;
   height: 40px;
   display: flex;
   align-items: center;
@@ -212,9 +214,11 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
   font-size: 0.9rem;
   color: #ccc;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .guide-text strong {
@@ -228,6 +232,8 @@ body {
   border-radius: 4px;
   font-size: 0.8rem;
   color: #81c784;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 /* === Modal === */
@@ -389,20 +395,28 @@ body {
 .spacer {
   flex-grow: 1;
 }
+.map-frame {
+  position: relative;
+}
+
 .coord-readout {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 5;
+  pointer-events: none;
   font-family: 'Segoe UI', sans-serif;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: #fff;
-  background: rgba(0, 0, 0, 0.7);
-  border-radius: 6px;
-  padding: 4px 10px;
-  margin-bottom: 8px;
-  display: inline-block;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 5px;
+  padding: 3px 8px;
 }
 
 .safehouse-label {
   position: absolute;
+  transform: translateX(-50%);
   font-family: 'Segoe UI', sans-serif;
   font-size: 11px;
   line-height: 14px;

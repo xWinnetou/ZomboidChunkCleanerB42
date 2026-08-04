@@ -158,7 +158,16 @@ export const deleteMapData = (
     const keptCells = new Set(pointsToKeep.map(({ x, y }) => getCellKey(x, y)));
     const affectedCells = [...new Set(pointsToDelete.map(({ x, y }) => getCellKey(x, y)))];
     const emptiedCells = affectedCells.filter((cell) => !keptCells.has(cell));
-    const partialCells = affectedCells.filter((cell) => keptCells.has(cell));
+
+    const protectedCells = new Set<string>();
+    for (const [{ x: x1, y: y1 }, { x: x2, y: y2 }] of excludedRegions) {
+        for (let x = Math.floor(x1 / CHUNKS_PER_CELL); x <= Math.floor((x2 - 1) / CHUNKS_PER_CELL); x++) {
+            for (let y = Math.floor(y1 / CHUNKS_PER_CELL); y <= Math.floor((y2 - 1) / CHUNKS_PER_CELL); y++) {
+                protectedCells.add(`${x}_${y}`);
+            }
+        }
+    }
+    const populationCells = affectedCells.filter((cell) => keptCells.has(cell) && !protectedCells.has(cell));
 
     const run = async (): Promise<DeleteReport> => {
         const errors: string[] = [];
@@ -233,23 +242,20 @@ export const deleteMapData = (
             progress('Agregados por celda', emptiedCells.length, emptiedCells.length);
         }
 
-        if (options.resetPartialPopulation && partialCells.length) {
-            progress('Repoblación de celdas parciales', 0, partialCells.length);
-            for (const [folder, prefix] of [
-                ['apop', 'apop'],
-                ['zpop', 'zpop']
-            ]) {
+        if (options.resetPopulation && populationCells.length) {
+            progress('Repoblación de zombis y animales', 0, populationCells.length);
+            for (const folder of ['apop', 'zpop']) {
                 const directory = await getDirectory(directoryHandle, folder);
                 if (!directory) {
                     continue;
                 }
-                await runBatched(partialCells, async (cell) => {
-                    if (await removeEntry(directory, `${prefix}_${cell}.bin`, errors)) {
+                await runBatched(populationCells, async (cell) => {
+                    if (await removeEntry(directory, `${folder}_${cell}.bin`, errors)) {
                         report.aggregates++;
                     }
                 });
             }
-            progress('Repoblación de celdas parciales', partialCells.length, partialCells.length);
+            progress('Repoblación de zombis y animales', populationCells.length, populationCells.length);
         }
 
         if (options.vehicles) {

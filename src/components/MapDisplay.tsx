@@ -92,24 +92,11 @@ export const MapDisplay: React.FC = () => {
                     context.strokeRect(x1 - minX, y1 - minY, x2 - x1, y2 - y1);
                 };
 
-                strokeRegion(
-                    expandRegion(region, safeHousePadding),
-                    Colors.SAFE_HOUSE_SURROUNDING,
-                    Colors.SAFE_HOUSE_PADDING_BORDER
-                );
+                strokeRegion(expandRegion(region, safeHousePadding), Colors.SAFE_HOUSE_SURROUNDING, Colors.SAFE_HOUSE_PADDING_BORDER);
                 strokeRegion(region, Colors.SAFE_HOUSE, Colors.SAFE_HOUSE_BORDER);
             }
         }
-    }, [
-        excludedRegions,
-        isSafeHouseProtectionEnabled,
-        isSelectionInverted,
-        mapData,
-        safeHousePadding,
-        safeHouses,
-        selection,
-        tileInfo
-    ]);
+    }, [excludedRegions, isSafeHouseProtectionEnabled, isSelectionInverted, mapData, safeHousePadding, safeHouses, selection, tileInfo]);
 
     useEffect(() => {
         const canvas = selectionCanvasRef.current;
@@ -257,75 +244,71 @@ export const MapDisplay: React.FC = () => {
 
     return (
         <Paper style={{ padding: '1rem', userSelect: 'none' }}>
-            <div className="coord-readout">
-                <span ref={readoutRef}>X: 0, Y: 0</span>
-            </div>
-            <div
-                ref={mapRootRef}
-                style={{
-                    contain: 'paint',
-                    overflow: 'auto',
-                    maxHeight: '80vh',
-                    maxWidth: '80vw',
-                    backgroundColor: '#2a2a2a'
-                }}
-            >
+            <div className="map-frame">
+                <div className="coord-readout">
+                    <span ref={readoutRef}>X: 0, Y: 0</span>
+                </div>
                 <div
-                    ref={surfaceRef}
-                    style={{ position: 'relative', width: width * zoomLevel, height: height * zoomLevel }}
+                    ref={mapRootRef}
+                    style={{
+                        contain: 'paint',
+                        overflow: 'auto',
+                        maxHeight: '80vh',
+                        maxWidth: '80vw',
+                        backgroundColor: '#2a2a2a'
+                    }}
                 >
-                    <div
-                        style={{
-                            position: 'absolute',
-                            top: 0,
-                            left: 0,
-                            width,
-                            height,
-                            overflow: 'hidden',
-                            transform: `scale(${zoomLevel})`,
-                            transformOrigin: '0 0'
-                        }}
-                    >
-                        {isMapDisplayed && (
-                            <img
-                                src="./assets/map_b42.png"
-                                alt=""
-                                style={{
-                                    position: 'absolute',
-                                    left: -minX,
-                                    top: -minY,
-                                    width: MAP_IMAGE_WIDTH_TILES / TILES_PER_CHUNK,
-                                    height: MAP_IMAGE_HEIGHT_TILES / TILES_PER_CHUNK,
-                                    imageRendering: 'pixelated',
-                                    opacity: 0.8,
-                                    pointerEvents: 'none'
-                                }}
-                                decoding="async"
+                    <div ref={surfaceRef} style={{ position: 'relative', width: width * zoomLevel, height: height * zoomLevel }}>
+                        <div
+                            style={{
+                                position: 'absolute',
+                                top: 0,
+                                left: 0,
+                                width,
+                                height,
+                                overflow: 'hidden',
+                                transform: `scale(${zoomLevel})`,
+                                transformOrigin: '0 0'
+                            }}
+                        >
+                            {isMapDisplayed && (
+                                <img
+                                    src="./assets/map_b42.png"
+                                    alt=""
+                                    style={{
+                                        position: 'absolute',
+                                        left: -minX,
+                                        top: -minY,
+                                        width: MAP_IMAGE_WIDTH_TILES / TILES_PER_CHUNK,
+                                        height: MAP_IMAGE_HEIGHT_TILES / TILES_PER_CHUNK,
+                                        imageRendering: 'pixelated',
+                                        opacity: 0.8,
+                                        pointerEvents: 'none'
+                                    }}
+                                    decoding="async"
+                                />
+                            )}
+                            <canvas ref={mapCanvasRef} style={{ position: 'absolute', top: 0, left: 0, imageRendering: 'pixelated' }} />
+                            <canvas
+                                ref={selectionCanvasRef}
+                                style={{ position: 'absolute', top: 0, left: 0, imageRendering: 'pixelated' }}
                             />
-                        )}
-                        <canvas
-                            ref={mapCanvasRef}
-                            style={{ position: 'absolute', top: 0, left: 0, imageRendering: 'pixelated' }}
-                        />
-                        <canvas
-                            ref={selectionCanvasRef}
-                            style={{ position: 'absolute', top: 0, left: 0, imageRendering: 'pixelated' }}
-                        />
-                    </div>
+                        </div>
 
-                    {isSafeHouseProtectionEnabled &&
-                        safeHouses.map(({ region, owner, title }, index) => (
-                            <div
-                                key={`${owner}-${index}`}
-                                className="safehouse-label"
-                                style={{
-                                    left: (region[0].x - minX) * zoomLevel,
-                                    top: (region[0].y - minY) * zoomLevel - 18
-                                }}
-                            >
-                                {title || owner}
-                            </div>
-                        ))}
+                        {isSafeHouseProtectionEnabled &&
+                            safeHouses.map(({ region, owner }, index) => (
+                                <div
+                                    key={`${owner}-${index}`}
+                                    className="safehouse-label"
+                                    style={{
+                                        left: ((region[0].x + region[1].x) / 2 - minX) * zoomLevel,
+                                        top: (region[0].y - minY) * zoomLevel - 18
+                                    }}
+                                >
+                                    Refugio de {owner}
+                                </div>
+                            ))}
+                    </div>
                 </div>
             </div>
         </Paper>
