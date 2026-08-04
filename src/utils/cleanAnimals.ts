@@ -165,13 +165,9 @@ const isSameBytes = (a: Uint8Array, b: Uint8Array) => {
 
 export const cleanAnimals = async (
     root: FileSystemDirectoryHandle,
-    deletedChunks: Coordinate[],
+    isSelected: (chunk: Coordinate) => boolean,
     errors: string[]
 ): Promise<number | null> => {
-    if (!deletedChunks.length) {
-        return 0;
-    }
-
     let fileHandle: FileSystemFileHandle;
     let buffer: ArrayBuffer;
     try {
@@ -195,14 +191,15 @@ export const cleanAnimals = async (
         return null;
     }
 
-    const deleted = new Set(deletedChunks.map(({ x, y }) => `${x}_${y}`));
     const keptAnimals: AnimalRecord[] = [];
     const removedUuids = new Set<string>();
 
     for (const animal of parsed.animals) {
-        const chunkX = Math.floor(animal.x / TILES_PER_CHUNK);
-        const chunkY = Math.floor(animal.y / TILES_PER_CHUNK);
-        if (deleted.has(`${chunkX}_${chunkY}`)) {
+        const chunk = {
+            x: Math.floor(animal.x / TILES_PER_CHUNK),
+            y: Math.floor(animal.y / TILES_PER_CHUNK)
+        };
+        if (isSelected(chunk)) {
             removedUuids.add(animal.uuid);
         } else {
             keptAnimals.push(animal);

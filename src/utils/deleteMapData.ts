@@ -7,7 +7,12 @@ import { partition } from './partition';
 
 const BATCH_SIZE = 64;
 
-const getCellKey = (x: number, y: number) => `${Math.floor(x / CHUNKS_PER_CELL)}_${Math.floor(y / CHUNKS_PER_CELL)}`;
+const AGGREGATES: { folder: string; prefix: string; isPopulation: boolean }[] = [
+    { folder: 'chunkdata', prefix: 'chunkdata', isPopulation: false },
+    { folder: 'metagrid', prefix: 'metacell', isPopulation: false },
+    { folder: 'apop', prefix: 'apop', isPopulation: true },
+    { folder: 'zpop', prefix: 'zpop', isPopulation: true }
+];
 
 const getDirectory = async (root: FileSystemDirectoryHandle, name: string) => {
     try {
@@ -15,6 +20,22 @@ const getDirectory = async (root: FileSystemDirectoryHandle, name: string) => {
     } catch {
         return undefined;
     }
+};
+
+const listEntries = async (directory: FileSystemDirectoryHandle, kind: 'file' | 'directory'): Promise<string[]> => {
+    const names: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for await (const entry of (directory as any).values()) {
+        if (entry.kind === kind) {
+            names.push(entry.name);
+        }
+    }
+    return names;
+};
+
+const parseCoordinates = (name: string, prefix: string): Coordinate | undefined => {
+    const match = new RegExp(`^${prefix}_(-?\\d+)_(-?\\d+)\\.bin$`).exec(name);
+    return match ? { x: parseInt(match[1], 10), y: parseInt(match[2], 10) } : undefined;
 };
 
 const removeEntry = async (directory: FileSystemDirectoryHandle, name: string, errors: string[]) => {
@@ -40,7 +61,7 @@ const runBatched = async <T>(items: T[], run: (item: T) => Promise<void>, onBatc
 const deleteNested = async (
     root: FileSystemDirectoryHandle,
     folder: string,
-    points: Coordinate[],
+    isSelected: (chunk: Coordinate) => boolean,
     errors: string[],
     extraNames: (y: number) => string[] = () => []
 ): Promise<number> => {
@@ -49,24 +70,25 @@ const deleteNested = async (
         return 0;
     }
 
-    const byX = new Map<number, number[]>();
-    points.forEach(({ x, y }) => {
-        const ys = byX.get(x);
-        if (ys) {
-            ys.push(y);
-        } else {
-            byX.set(x, [y]);
-        }
-    });
-
     let deleted = 0;
-    for (const [x, ys] of byX.entries()) {
-        const xDirectory = await getDirectory(directory, x.toString());
+    for (const xName of await listEntries(directory, 'directory')) {
+        const x = parseInt(xName, 10);
+        if (isNaN(x)) {
+            continue;
+        }
+
+        const xDirectory = await getDirectory(directory, xName);
         if (!xDirectory) {
             continue;
         }
 
-        await runBatched(ys, async (y) => {
+        const files = await listEntries(xDirectory, 'file');
+        const targets = files
+            .filter((name) => name.endsWith('.bin'))
+            .map((name) => parseInt(name.slice(0, -4), 10))
+            .filter((y) => !isNaN(y) && isSelected({ x, y }));
+
+        await runBatched(targets, async (y) => {
             if (await removeEntry(xDirectory, `${y}.bin`, errors)) {
                 deleted++;
             }
@@ -75,16 +97,18 @@ const deleteNested = async (
             }
         });
 
-        await removeEntry(directory, x.toString(), []);
+        if (targets.length === files.length) {
+            await removeEntry(directory, xName, []);
+        }
     }
     return deleted;
 };
 
-const deleteVehicles = async (root: FileSystemDirectoryHandle, points: Coordinate[], errors: string[]): Promise<number | null> => {
-    if (!points.length) {
-        return 0;
-    }
-
+const deleteVehicles = async (
+    root: FileSystemDirectoryHandle,
+    isSelected: (chunk: Coordinate) => boolean,
+    errors: string[]
+): Promise<number | null> => {
     try {
         const fileHandle = await root.getFileHandle('vehicles.db', { create: false });
         const original = await (await fileHandle.getFile()).arrayBuffer();
@@ -97,10 +121,25 @@ const deleteVehicles = async (root: FileSystemDirectoryHandle, points: Coordinat
         const db = new SQL.Database(new Uint8Array(original));
 
         try {
+            const chunks: Coordinate[] = [];
+            const cursor = db.prepare('SELECT DISTINCT wx, wy FROM vehicles');
+            while (cursor.step()) {
+                const [wx, wy] = cursor.get() as number[];
+                const chunk = { x: wx, y: wy };
+                if (isSelected(chunk)) {
+                    chunks.push(chunk);
+                }
+            }
+            cursor.free();
+
+            if (!chunks.length) {
+                return 0;
+            }
+
             db.run('BEGIN TRANSACTION');
             db.run('CREATE TEMP TABLE __chunks_to_delete (wx INTEGER, wy INTEGER)');
             const insert = db.prepare('INSERT INTO __chunks_to_delete VALUES (:wx, :wy)');
-            for (const { x, y } of points) {
+            for (const { x, y } of chunks) {
                 insert.run({ ':wx': x, ':wy': y });
             }
             insert.free();
@@ -151,13 +190,9 @@ export const deleteMapData = (
     options: DeleteOptions,
     onProgress?: (progress: DeleteProgress) => void
 ): [mapData: Coordinate[], done: Promise<DeleteReport>] => {
-    const [pointsToDelete, pointsToKeep] = partition(mapData, (point) =>
-        isPointSelected(point, region, isSelectionInverted, excludedRegions)
-    );
+    const isSelected = (chunk: Coordinate) => isPointSelected(chunk, region, isSelectionInverted, excludedRegions);
 
-    const keptCells = new Set(pointsToKeep.map(({ x, y }) => getCellKey(x, y)));
-    const affectedCells = [...new Set(pointsToDelete.map(({ x, y }) => getCellKey(x, y)))];
-    const emptiedCells = affectedCells.filter((cell) => !keptCells.has(cell));
+    const [pointsToDelete, pointsToKeep] = partition(mapData, isSelected);
 
     const protectedCells = new Set<string>();
     for (const [{ x: x1, y: y1 }, { x: x2, y: y2 }] of excludedRegions) {
@@ -167,7 +202,31 @@ export const deleteMapData = (
             }
         }
     }
-    const populationCells = affectedCells.filter((cell) => keptCells.has(cell) && !protectedCells.has(cell));
+
+    const cellCache = new Map<string, { partly: boolean; fully: boolean }>();
+    const classifyCell = ({ x: cellX, y: cellY }: Coordinate) => {
+        const key = `${cellX}_${cellY}`;
+        const cached = cellCache.get(key);
+        if (cached) {
+            return cached;
+        }
+
+        let partly = false;
+        let fully = true;
+        for (let x = cellX * CHUNKS_PER_CELL; x < (cellX + 1) * CHUNKS_PER_CELL; x++) {
+            for (let y = cellY * CHUNKS_PER_CELL; y < (cellY + 1) * CHUNKS_PER_CELL; y++) {
+                if (isSelected({ x, y })) {
+                    partly = true;
+                } else {
+                    fully = false;
+                }
+            }
+        }
+
+        const result = { partly, fully };
+        cellCache.set(key, result);
+        return result;
+    };
 
     const run = async (): Promise<DeleteReport> => {
         const errors: string[] = [];
@@ -183,90 +242,95 @@ export const deleteMapData = (
 
         const progress = (phase: string, current: number, total: number) => onProgress?.({ phase, current, total });
 
-        progress('Chunks (formato B41)', 0, pointsToDelete.length);
-        await runBatched(
-            pointsToDelete,
-            async ({ x, y }) => {
-                if (await removeEntry(directoryHandle, `map_${x}_${y}.bin`, errors)) {
-                    report.chunks++;
-                }
-            },
-            (done) => progress('Chunks (formato B41)', done, pointsToDelete.length)
-        );
+        const flatChunks = (await listEntries(directoryHandle, 'file')).filter((name) => {
+            const chunk = parseCoordinates(name, 'map');
+            return !!chunk && isSelected(chunk);
+        });
+        if (flatChunks.length) {
+            progress('Chunks (formato B41)', 0, flatChunks.length);
+            await runBatched(
+                flatChunks,
+                async (name) => {
+                    if (await removeEntry(directoryHandle, name, errors)) {
+                        report.chunks++;
+                    }
+                },
+                (done) => progress('Chunks (formato B41)', done, flatChunks.length)
+            );
+        }
 
         progress('Chunks del mapa', 0, pointsToDelete.length);
-        report.chunks += await deleteNested(directoryHandle, 'map', pointsToDelete, errors);
+        report.chunks += await deleteNested(directoryHandle, 'map', isSelected, errors);
         progress('Chunks del mapa', pointsToDelete.length, pointsToDelete.length);
 
         if (options.corruptedChunks) {
-            progress('Chunks corruptos (blam)', 0, pointsToDelete.length);
-            report.corruptedChunks += await deleteNested(directoryHandle, 'blam', pointsToDelete, errors, (y) => [`${y}_error.txt`]);
-            progress('Chunks corruptos (blam)', pointsToDelete.length, pointsToDelete.length);
+            progress('Chunks corruptos (blam)', 0, 1);
+            report.corruptedChunks += await deleteNested(directoryHandle, 'blam', isSelected, errors, (y) => [`${y}_error.txt`]);
+            progress('Chunks corruptos (blam)', 1, 1);
         }
 
         if (options.isoRegionData) {
             const isoDirectory = await getDirectory(directoryHandle, 'isoregiondata');
             if (isoDirectory) {
-                progress('Datos de región', 0, pointsToDelete.length);
+                const targets = (await listEntries(isoDirectory, 'file')).filter((name) => {
+                    const chunk = parseCoordinates(name, 'datachunk');
+                    return !!chunk && isSelected(chunk);
+                });
+                progress('Datos de región', 0, targets.length);
                 await runBatched(
-                    pointsToDelete,
-                    async ({ x, y }) => {
-                        if (await removeEntry(isoDirectory, `datachunk_${x}_${y}.bin`, errors)) {
+                    targets,
+                    async (name) => {
+                        if (await removeEntry(isoDirectory, name, errors)) {
                             report.isoRegionData++;
                         }
                     },
-                    (done) => progress('Datos de región', done, pointsToDelete.length)
+                    (done) => progress('Datos de región', done, targets.length)
                 );
             }
         }
 
-        if (options.aggregates) {
-            progress('Agregados por celda', 0, emptiedCells.length);
-            const aggregates: [string, (cell: string) => string][] = [
-                ['chunkdata', (cell) => `chunkdata_${cell}.bin`],
-                ['apop', (cell) => `apop_${cell}.bin`],
-                ['metagrid', (cell) => `metacell_${cell}.bin`],
-                ['zpop', (cell) => `zpop_${cell}.bin`]
-            ];
-            for (const [folder, toName] of aggregates) {
-                const directory = await getDirectory(directoryHandle, folder);
-                if (!directory) {
-                    continue;
-                }
-                await runBatched(emptiedCells, async (cell) => {
-                    if (await removeEntry(directory, toName(cell), errors)) {
-                        report.aggregates++;
-                    }
-                });
+        for (const { folder, prefix, isPopulation } of AGGREGATES) {
+            const directory = await getDirectory(directoryHandle, folder);
+            if (!directory) {
+                continue;
             }
-            progress('Agregados por celda', emptiedCells.length, emptiedCells.length);
-        }
 
-        if (options.resetPopulation && populationCells.length) {
-            progress('Repoblación de zombis y animales', 0, populationCells.length);
-            for (const folder of ['apop', 'zpop']) {
-                const directory = await getDirectory(directoryHandle, folder);
-                if (!directory) {
-                    continue;
+            const targets = (await listEntries(directory, 'file')).filter((name) => {
+                const cell = parseCoordinates(name, prefix);
+                if (!cell) {
+                    return false;
                 }
-                await runBatched(populationCells, async (cell) => {
-                    if (await removeEntry(directory, `${folder}_${cell}.bin`, errors)) {
+                const { partly, fully } = classifyCell(cell);
+                if (!partly) {
+                    return false;
+                }
+                if (options.aggregates && fully) {
+                    return true;
+                }
+                return options.resetPopulation && isPopulation && !protectedCells.has(`${cell.x}_${cell.y}`);
+            });
+
+            progress(`Agregados: ${folder}`, 0, targets.length);
+            await runBatched(
+                targets,
+                async (name) => {
+                    if (await removeEntry(directory, name, errors)) {
                         report.aggregates++;
                     }
-                });
-            }
-            progress('Repoblación de zombis y animales', populationCells.length, populationCells.length);
+                },
+                (done) => progress(`Agregados: ${folder}`, done, targets.length)
+            );
         }
 
         if (options.vehicles) {
             progress('Vehículos', 0, 1);
-            report.vehicles = await deleteVehicles(directoryHandle, pointsToDelete, errors);
+            report.vehicles = await deleteVehicles(directoryHandle, isSelected, errors);
             progress('Vehículos', 1, 1);
         }
 
         if (options.animals) {
             progress('Animales', 0, 1);
-            report.animals = await cleanAnimals(directoryHandle, pointsToDelete, errors);
+            report.animals = await cleanAnimals(directoryHandle, isSelected, errors);
             progress('Animales', 1, 1);
         }
 
