@@ -1,7 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { AppContext } from '../contexts';
-import type { AppContextValue, Coordinate, Region, SafeHouse } from '../types';
+import { DEFAULT_DELETE_OPTIONS } from '../types';
+import type {
+    AppContextValue,
+    Coordinate,
+    DeleteOptions,
+    DeleteProgress,
+    DeleteReport,
+    Region,
+    SafeHouse,
+    SafeHouseScanMethod
+} from '../types';
 import { deleteMapData, expandRegion, loadMapData, loadSafeHouses } from '../utils';
 
 interface SelectionInfo {
@@ -13,7 +23,31 @@ interface DeleteFiles {
     mapData: Coordinate[];
     selectionInfo?: SelectionInfo;
     excludedRegions: Region[];
+    deleteOptions: DeleteOptions;
 }
+
+/**
+ * Pide permiso de escritura explícitamente. Sin esto, `removeEntry` falla con
+ * NotAllowedError y (antes) el fallo se tragaba en silencio: parecía que había
+ * borrado y no había borrado nada.
+ */
+const pickSaveDirectory = async (): Promise<FileSystemDirectoryHandle> => {
+    const directoryHandle = await window.showDirectoryPicker({ id: 'pz-save', mode: 'readwrite' });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const handle = directoryHandle as any;
+    if (typeof handle.queryPermission === 'function') {
+        let permission = await handle.queryPermission({ mode: 'readwrite' });
+        if (permission === 'prompt') {
+            permission = await handle.requestPermission({ mode: 'readwrite' });
+        }
+        if (permission !== 'granted') {
+            throw new Error('No has dado permiso de escritura sobre la carpeta. Sin ese permiso la herramienta no puede borrar nada.');
+        }
+    }
+
+    return directoryHandle;
+};
 
 export const AppContainer: React.FC = (props) => {
     const directoryHandleRef = useRef<FileSystemDirectoryHandle>();
@@ -26,6 +60,15 @@ export const AppContainer: React.FC = (props) => {
     const [isSafeHouseProtectionEnabled, setIsSafeHouseProtectionEnabled] = useState<boolean>(true);
     const [safeHouses, setSafeHouses] = useState<SafeHouse[]>([]);
     const [safeHousePadding, setSafeHousePadding] = useState<number>(4);
+    const [safeHouseScanMethod, setSafeHouseScanMethod] = useState<SafeHouseScanMethod | undefined>(undefined);
+    const [safeHouseWarnings, setSafeHouseWarnings] = useState<string[]>([]);
+    const [worldVersion, setWorldVersion] = useState<number | null>(null);
+
+    const [deleteOptions, setDeleteOptions] = useState<DeleteOptions>(DEFAULT_DELETE_OPTIONS);
+    const [deleteProgress, setDeleteProgress] = useState<DeleteProgress | undefined>(undefined);
+    const [deleteReport, setDeleteReport] = useState<DeleteReport | undefined>(undefined);
+    const [isLoading, setIsLoading] = useState<boolean>(false);
+    const [loadError, setLoadError] = useState<string | undefined>(undefined);
 
     const deleteFilesRef = useRef<DeleteFiles>();
 
@@ -39,96 +82,147 @@ export const AppContainer: React.FC = (props) => {
     deleteFilesRef.current = {
         mapData,
         selectionInfo,
-        excludedRegions
+        excludedRegions,
+        deleteOptions
     };
 
-    const actions = useMemo<AppContextValue['actions']>(() => {
-        return {
-            deleteMapData: () => {
-                if (!deleteFilesRef.current) {
-                    throw new Error('Something went wrong!');
-                }
+    const runDelete = useCallback(() => {
+        if (!deleteFilesRef.current) {
+            return;
+        }
 
-                const { excludedRegions, mapData, selectionInfo } = deleteFilesRef.current;
-                if (!directoryHandleRef.current) {
-                    console.error('No directory handle found! Cannot delete map files!');
-                    return [mapData, Promise.resolve()];
-                }
+        const { excludedRegions, mapData, selectionInfo, deleteOptions } = deleteFilesRef.current;
+        if (!directoryHandleRef.current) {
+            setLoadError('No hay ninguna partida cargada.');
+            return;
+        }
+        if (!selectionInfo) {
+            return;
+        }
 
-                if (!selectionInfo) {
-                    return [mapData, Promise.resolve()];
-                }
+        setDeleteReport(undefined);
+        setDeleteProgress({ phase: 'Preparando', current: 0, total: 1 });
 
-                const [newMapData, done] = deleteMapData(
-                    directoryHandleRef.current,
-                    mapData,
-                    selectionInfo.selection,
-                    selectionInfo.isSelectionInverted,
-                    excludedRegions
-                );
+        const [newMapData, done] = deleteMapData(
+            directoryHandleRef.current,
+            mapData,
+            selectionInfo.selection,
+            selectionInfo.isSelectionInverted,
+            excludedRegions,
+            deleteOptions,
+            setDeleteProgress
+        );
 
-                done.then(() => {
-                    setMapData(newMapData);
-                });
-            },
-            loadMapData: async () => {
-                directoryHandleRef.current = await window.showDirectoryPicker();
-
-                const mapData = await loadMapData(directoryHandleRef.current);
-                const safeHouses = await loadSafeHouses(directoryHandleRef.current).catch((e) => {
-                    console.error(
-                        'Failed to load safe houses! Please raise an issue on Please raise an issue at https://github.com/grabofus/zomboid-chunk-cleaner/issues',
-                        e
-                    );
-                    return [];
-                });
-
-                setMapData(mapData);
-                setSafeHouses(safeHouses);
-            },
-            selectRegion: (region, isSelectionInverted) => {
-                setSelectionInfo({
-                    selection: region,
-                    isSelectionInverted: isSelectionInverted ?? false
-                });
-            },
-            unselectRegion: () => {
+        done.then(
+            (report) => {
+                setMapData(newMapData);
                 setSelectionInfo(undefined);
+                setDeleteProgress(undefined);
+                setDeleteReport(report);
             },
-            setIsSafeHouseProtectionEnabled: (isSafeHouseProtectionEnabled) => {
-                setIsSafeHouseProtectionEnabled(isSafeHouseProtectionEnabled);
-            },
-            setSafeHousePadding: (safeHousePadding) => {
-                setSafeHousePadding(safeHousePadding);
-            },
-            setZoomLevel: (zoomLevel) => {
-                setZoomLevel(zoomLevel);
-            },
-            toggleMap: (isMapDisplayed) => {
-                setIsMapDisplayed(isMapDisplayed);
+            (e: Error) => {
+                setDeleteProgress(undefined);
+                setLoadError(`El borrado ha fallado: ${e.message}`);
             }
-        };
+        );
     }, []);
 
-    useEffect(() => {
-        if (!directoryHandleRef.current) {
+    const load = useCallback(async () => {
+        setLoadError(undefined);
+        setDeleteReport(undefined);
+
+        let directoryHandle: FileSystemDirectoryHandle;
+        try {
+            directoryHandle = await pickSaveDirectory();
+        } catch (e) {
+            const error = e as Error;
+            if (error.name !== 'AbortError') {
+                setLoadError(error.message);
+            }
             return;
+        }
+
+        directoryHandleRef.current = directoryHandle;
+        setIsLoading(true);
+        try {
+            const mapData = await loadMapData(directoryHandle);
+            const scan = await loadSafeHouses(directoryHandle);
+
+            setMapData(mapData);
+            setSafeHouses(scan.safeHouses);
+            setSafeHouseScanMethod(scan.method);
+            setSafeHouseWarnings(scan.warnings);
+            setWorldVersion(scan.version);
+            setSelectionInfo(undefined);
+
+            if (!mapData.length) {
+                setLoadError(
+                    'No se ha encontrado ningún chunk. ¿Seguro que has elegido la carpeta de la partida ' +
+                        '(la que contiene map/ y map_meta.bin) y no la carpeta Saves?'
+                );
+            }
+        } catch (e) {
+            setLoadError(`No se ha podido leer la partida: ${(e as Error).message}`);
+        } finally {
+            setIsLoading(false);
         }
     }, []);
 
+    const actions = useMemo<AppContextValue['actions']>(
+        () => ({
+            deleteMapData: runDelete,
+            loadMapData: load,
+            selectRegion: (region, isSelectionInverted) => {
+                setSelectionInfo({ selection: region, isSelectionInverted: isSelectionInverted ?? false });
+            },
+            unselectRegion: () => setSelectionInfo(undefined),
+            setDeleteOption: (key, value) => setDeleteOptions((current) => ({ ...current, [key]: value })),
+            setIsSafeHouseProtectionEnabled,
+            setSafeHousePadding,
+            setZoomLevel,
+            toggleMap: setIsMapDisplayed
+        }),
+        [load, runDelete]
+    );
+
     const state = useMemo<AppContextValue['state']>(
         () => ({
+            deleteOptions,
+            deleteProgress,
+            deleteReport,
             excludedRegions,
+            isLoading,
             isMapDisplayed,
             isSafeHouseProtectionEnabled,
             isSelectionInverted: selectionInfo?.isSelectionInverted ?? false,
+            loadError,
             mapData,
             safeHouses,
+            safeHouseScanMethod,
             safeHousePadding,
+            safeHouseWarnings,
             selection: selectionInfo?.selection,
+            worldVersion,
             zoomLevel
         }),
-        [isMapDisplayed, isSafeHouseProtectionEnabled, mapData, safeHousePadding, safeHouses, selectionInfo, zoomLevel]
+        [
+            deleteOptions,
+            deleteProgress,
+            deleteReport,
+            excludedRegions,
+            isLoading,
+            isMapDisplayed,
+            isSafeHouseProtectionEnabled,
+            loadError,
+            mapData,
+            safeHousePadding,
+            safeHouseScanMethod,
+            safeHouseWarnings,
+            safeHouses,
+            selectionInfo,
+            worldVersion,
+            zoomLevel
+        ]
     );
 
     const value = useMemo(() => ({ actions, state }), [actions, state]);

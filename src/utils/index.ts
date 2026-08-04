@@ -1,4 +1,5 @@
 export * from './BinaryReader';
+export * from './cleanAnimals';
 export * from './deleteMapData';
 export * from './expandRegion';
 export * from './isChildOf';

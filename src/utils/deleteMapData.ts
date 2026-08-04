@@ -1,78 +1,169 @@
-import type { Coordinate, Region } from '../types';
+import { CHUNKS_PER_CELL } from '../constants';
+import type { Coordinate, DeleteOptions, DeleteProgress, DeleteReport, Region } from '../types';
 
+import { cleanAnimals } from './cleanAnimals';
 import { isPointSelected } from './isPointSelected';
 import { partition } from './partition';
 
-// Identify General Cells (32x32 Chunks)
-const getGeneralCell = (x: number, y: number) => `${Math.floor(x / 32)}_${Math.floor(y / 32)}`;
+/*
+ * Estructura de un save de Build 42 (verificado en 42.20):
+ *
+ *   map/<chunkX>/<chunkY>.bin              chunk del mundo (8x8 tiles)
+ *   blam/<chunkX>/<chunkY>.bin             copia de un chunk que falló el CRC
+ *   blam/<chunkX>/<chunkY>_error.txt       el stacktrace de ese fallo
+ *   isoregiondata/datachunk_<cX>_<cY>.bin  datos de región, por chunk
+ *   chunkdata/chunkdata_<celda>.bin        agregados por celda de 32x32 chunks
+ *   apop/apop_<celda>.bin                  (256x256 tiles)
+ *   metagrid/metacell_<celda>.bin
+ *   zpop/zpop_<celda>.bin
+ *   vehicles.db                            SQLite; wx/wy son coordenadas de CHUNK
+ *   map_animals.bin                        población de animales salvajes, global
+ *
+ * En B41 los chunks eran ficheros planos map_X_Y.bin en la raíz; se siguen
+ * borrando por si se abre un save antiguo.
+ */
 
-const deleteFile = async (root: FileSystemDirectoryHandle, path: string[]) => {
+const BATCH_SIZE = 64;
+
+const getCellKey = (x: number, y: number) => `${Math.floor(x / CHUNKS_PER_CELL)}_${Math.floor(y / CHUNKS_PER_CELL)}`;
+
+const getDirectory = async (root: FileSystemDirectoryHandle, name: string) => {
     try {
-        let current = root;
-        for (let i = 0; i < path.length - 1; i++) {
-            current = await current.getDirectoryHandle(path[i]);
-        }
-        await current.removeEntry(path[path.length - 1]);
-    } catch (e) {
-        // Ignore (file/dir doesn't exist)
+        return await root.getDirectoryHandle(name);
+    } catch {
+        return undefined;
     }
 };
 
-// Generic nested deleter for structure: root/X/Y.bin
-const deleteNested = async (root: FileSystemDirectoryHandle, folder: string, points: Coordinate[]) => {
+/** Devuelve `true` si el fichero existía y se ha borrado. */
+const removeEntry = async (directory: FileSystemDirectoryHandle, name: string, errors: string[]) => {
     try {
-        const dir = await root.getDirectoryHandle(folder);
-        // Optimization: Group by X
-        const byX = new Map<number, number[]>();
-        points.forEach(({ x, y }) => {
-            if (!byX.has(x)) byX.set(x, []);
-            byX.get(x)!.push(y);
-        });
-
-        for (const [x, ys] of byX.entries()) {
-            try {
-                const xDir = await dir.getDirectoryHandle(x.toString());
-                await Promise.all(ys.map(y => xDir.removeEntry(`${y}.bin`).catch(() => { })));
-            } catch { } // X dir missing
+        await directory.removeEntry(name);
+        return true;
+    } catch (e) {
+        const error = e as DOMException;
+        // NotFoundError es lo normal: no todos los chunks tienen todos los ficheros.
+        if (error?.name && error.name !== 'NotFoundError') {
+            errors.push(`${name}: ${error.name} ${error.message ?? ''}`.trim());
         }
-    } catch { } // Root folder missing
+        return false;
+    }
 };
 
-// Generic flat deleter for structure: root/prefix_X_Y.bin
-// Validates X,Y against points set
-const deleteFlat = async (root: FileSystemDirectoryHandle, folder: string, prefix: string, pointsSet: Set<string>) => {
-    try {
-        const dir = await root.getDirectoryHandle(folder);
-        // We have to scan because we don't know exactly which files exist, 
-        // OR we can iterate points and try delete? Use Points is better if sparse selection?
-        // But iterating 1000s of points vs 100s of files.
-        // Better: Iterate points and try delete.
-
-        // Wait, for `isoregiondata`, it's `datachunk_X_Y.bin`.
-        // If we iterate points, we generate thousands of requests.
-        // Better to list dir?
-        // Let's iterate directory values (if standard API allows).
-        // Since we faced issues with .values() before, let's use the 'any' hack or iterate points if selection is small?
-        // Let's try iterating selection. Safe and correct.
-
-        // However, user said `isoregiondata` creates many files.
-        // Let's try iterating points.
-
-        // Wait, PointsSet is `X_Y`.
-        // We iterate `pointsSet` entries? No, `pointsToDelete` array.
-    } catch { }
+const runBatched = async <T>(items: T[], run: (item: T) => Promise<void>, onBatch?: (done: number) => void) => {
+    for (let i = 0; i < items.length; i += BATCH_SIZE) {
+        await Promise.all(items.slice(i, i + BATCH_SIZE).map(run));
+        onBatch?.(Math.min(i + BATCH_SIZE, items.length));
+    }
 };
 
-const loadSqlJsLib = async () => {
-    // @ts-ignore
-    if (typeof window !== 'undefined' && !window.initSqlJs) {
-        const script = document.createElement('script');
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.min.js';
-        await new Promise((resolve, reject) => {
-            script.onload = resolve;
-            script.onerror = reject;
-            document.body.appendChild(script);
+/** Borra `<folder>/<x>/<y>.bin` (y los ficheros extra que indique `extraNames`). */
+const deleteNested = async (
+    root: FileSystemDirectoryHandle,
+    folder: string,
+    points: Coordinate[],
+    errors: string[],
+    extraNames: (y: number) => string[] = () => []
+): Promise<number> => {
+    const directory = await getDirectory(root, folder);
+    if (!directory) {
+        return 0;
+    }
+
+    const byX = new Map<number, number[]>();
+    points.forEach(({ x, y }) => {
+        const ys = byX.get(x);
+        if (ys) {
+            ys.push(y);
+        } else {
+            byX.set(x, [y]);
+        }
+    });
+
+    let deleted = 0;
+    for (const [x, ys] of byX.entries()) {
+        const xDirectory = await getDirectory(directory, x.toString());
+        if (!xDirectory) {
+            continue;
+        }
+
+        await runBatched(ys, async (y) => {
+            if (await removeEntry(xDirectory, `${y}.bin`, errors)) {
+                deleted++;
+            }
+            for (const name of extraNames(y)) {
+                await removeEntry(xDirectory, name, errors);
+            }
         });
+
+        // Si la carpeta X se queda vacía, el juego no la vuelve a usar.
+        await removeEntry(directory, x.toString(), []);
+    }
+    return deleted;
+};
+
+const deleteVehicles = async (root: FileSystemDirectoryHandle, points: Coordinate[], errors: string[]): Promise<number | null> => {
+    if (!points.length) {
+        return 0;
+    }
+
+    try {
+        const fileHandle = await root.getFileHandle('vehicles.db', { create: false });
+        const original = await (await fileHandle.getFile()).arrayBuffer();
+
+        const [{ default: initSqlJs }, { default: wasmUrl }] = await Promise.all([
+            import('sql.js'),
+            import('sql.js/dist/sql-wasm.wasm?url')
+        ]);
+        const SQL = await initSqlJs({ locateFile: () => wasmUrl });
+        const db = new SQL.Database(new Uint8Array(original));
+
+        try {
+            db.run('BEGIN TRANSACTION');
+            db.run('CREATE TEMP TABLE __chunks_to_delete (wx INTEGER, wy INTEGER)');
+            const insert = db.prepare('INSERT INTO __chunks_to_delete VALUES (:wx, :wy)');
+            for (const { x, y } of points) {
+                insert.run({ ':wx': x, ':wy': y });
+            }
+            insert.free();
+            db.run(
+                'DELETE FROM vehicles WHERE EXISTS (' +
+                    'SELECT 1 FROM __chunks_to_delete d WHERE d.wx = vehicles.wx AND d.wy = vehicles.wy)'
+            );
+            const removed = db.getRowsModified();
+            db.run('DROP TABLE __chunks_to_delete');
+            db.run('COMMIT');
+
+            if (removed === 0) {
+                // No hay nada que cambiar: mejor no reescribir el fichero.
+                return 0;
+            }
+
+            // Copia de seguridad antes de sobrescribir.
+            const backupHandle = await root.getFileHandle('vehicles.db.bak', { create: true });
+            const backupWritable = await backupHandle.createWritable();
+            await backupWritable.write(original);
+            await backupWritable.close();
+
+            const data = db.export();
+            const writable = await fileHandle.createWritable();
+            await writable.write(data);
+            await writable.close();
+
+            // El journal describe la versión anterior del fichero.
+            await removeEntry(root, 'vehicles.db-journal', []);
+
+            return removed;
+        } finally {
+            db.close();
+        }
+    } catch (e) {
+        const error = e as Error;
+        if ((e as DOMException)?.name === 'NotFoundError') {
+            return null; // el save no tiene vehicles.db
+        }
+        errors.push(`vehicles.db: ${error.message}`);
+        return null;
     }
 };
 
@@ -81,104 +172,135 @@ export const deleteMapData = (
     mapData: Coordinate[],
     region: Region,
     isSelectionInverted: boolean,
-    excludedRegions: Region[]
-): [mapData: Coordinate[], done: Promise<void>] => {
+    excludedRegions: Region[],
+    options: DeleteOptions,
+    onProgress?: (progress: DeleteProgress) => void
+): [mapData: Coordinate[], done: Promise<DeleteReport>] => {
     const [pointsToDelete, pointsToKeep] = partition(mapData, (point) =>
         isPointSelected(point, region, isSelectionInverted, excludedRegions)
     );
 
-    const keptGeneralCells = new Set<string>();
-    pointsToKeep.forEach((p) => keptGeneralCells.add(getGeneralCell(p.x, p.y)));
+    const keptCells = new Set(pointsToKeep.map(({ x, y }) => getCellKey(x, y)));
+    const affectedCells = [...new Set(pointsToDelete.map(({ x, y }) => getCellKey(x, y)))];
+    const emptiedCells = affectedCells.filter((cell) => !keptCells.has(cell));
+    const partialCells = affectedCells.filter((cell) => keptCells.has(cell));
 
-    const affectedGeneralCells = new Set<string>();
-    pointsToDelete.forEach((p) => affectedGeneralCells.add(getGeneralCell(p.x, p.y)));
+    const run = async (): Promise<DeleteReport> => {
+        const errors: string[] = [];
+        const report: DeleteReport = {
+            chunks: 0,
+            isoRegionData: 0,
+            aggregates: 0,
+            corruptedChunks: 0,
+            vehicles: null,
+            animals: null,
+            errors
+        };
 
-    const filesToDelete: string[] = [];
-    pointsToDelete.forEach(({ x, y }) => {
-        filesToDelete.push(`map_${x}_${y}.bin`);
-    });
+        const progress = (phase: string, current: number, total: number) => onProgress?.({ phase, current, total });
 
-    const deletePromise = async () => {
-        // 1. B41 Flat Files
-        await Promise.all(
-            filesToDelete.map((f) => directoryHandle.removeEntry(f).catch(() => { }))
+        // 1. Chunks planos de B41 en la raíz (map_X_Y.bin).
+        progress('Chunks (formato B41)', 0, pointsToDelete.length);
+        await runBatched(
+            pointsToDelete,
+            async ({ x, y }) => {
+                if (await removeEntry(directoryHandle, `map_${x}_${y}.bin`, errors)) {
+                    report.chunks++;
+                }
+            },
+            (done) => progress('Chunks (formato B41)', done, pointsToDelete.length)
         );
 
-        // 2. B42 Nested Chunks: map/X/Y.bin
-        await deleteNested(directoryHandle, 'map', pointsToDelete);
+        // 2. Chunks de B42: map/X/Y.bin
+        progress('Chunks del mapa', 0, pointsToDelete.length);
+        report.chunks += await deleteNested(directoryHandle, 'map', pointsToDelete, errors);
+        progress('Chunks del mapa', pointsToDelete.length, pointsToDelete.length);
 
-        // 3. Vehicles.db (Selective Delete)
-        try {
-            // Load SQL.js
-            await loadSqlJsLib();
-
-            // Open vehicles.db
-            const vehiclesHandle = await directoryHandle.getFileHandle('vehicles.db', { create: false });
-            const vehiclesFile = await vehiclesHandle.getFile();
-            const arrayBuffer = await vehiclesFile.arrayBuffer();
-
-            // @ts-ignore
-            const SQL = await window.initSqlJs({
-                locateFile: (file: string) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
-            });
-            const db = new SQL.Database(new Uint8Array(arrayBuffer));
-
-            // Execute Delete
-            // vehicles.db stores chunk coordinates in 'wx' and 'wy'
-            db.run("BEGIN TRANSACTION");
-            const stmt = db.prepare("DELETE FROM vehicles WHERE wx = :wx AND wy = :wy");
-
-            // Optimization: We could group or use IN clause, but simple iteration is robust
-            for (const p of pointsToDelete) {
-                stmt.run({ ':wx': p.x, ':wy': p.y });
-            }
-            stmt.free();
-            db.run("COMMIT");
-
-            // Export and Write
-            const data = db.export();
-            const writable = await vehiclesHandle.createWritable();
-            await writable.write(data as any);
-            await writable.close();
-
-            // Delete journal to prevent potential consistency issues
-            await directoryHandle.removeEntry('vehicles.db-journal').catch(() => { });
-
-            console.log('Successfully cleaned vehicles.db');
-        } catch (e) {
-            console.warn('Failed to clean vehicles.db (it might not exist or blocked):', e);
+        // 3. Chunks corruptos que el juego apartó en blam/
+        if (options.corruptedChunks) {
+            progress('Chunks corruptos (blam)', 0, pointsToDelete.length);
+            report.corruptedChunks += await deleteNested(directoryHandle, 'blam', pointsToDelete, errors, (y) => [`${y}_error.txt`]);
+            progress('Chunks corruptos (blam)', pointsToDelete.length, pointsToDelete.length);
         }
 
-        // 4. Special folders cleanup
-        // zpop is flat in B42/B41 mixed ? User says zpop/zpop_X_Y.bin exists.
-        // We handle zpop in aggregates below if the cell is fully cleared.
-        // But if user has zpop_X_Y.bin NOT in aggregates approach? 
-        // Existing code handled zpop in aggregates. Let's ensure we look in zpop folder.
-
-        // 5. ISOREGIONDATA: isoregiondata/datachunk_X_Y.bin (Flat)
-        try {
-            const isoDir = await directoryHandle.getDirectoryHandle('isoregiondata');
-            const chunkSize = 50;
-            for (let i = 0; i < pointsToDelete.length; i += chunkSize) {
-                const chunk = pointsToDelete.slice(i, i + chunkSize);
-                await Promise.all(chunk.map(p =>
-                    isoDir.removeEntry(`datachunk_${p.x}_${p.y}.bin`).catch(() => { })
-                ));
-            }
-        } catch { }
-
-        // 6. Aggregate Files (Safed)
-        for (const cellKey of affectedGeneralCells) {
-            if (!keptGeneralCells.has(cellKey)) {
-                // Delete aggregates only if fully cleared
-                await deleteFile(directoryHandle, ['chunkdata', `chunkdata_${cellKey}.bin`]);
-                await deleteFile(directoryHandle, ['apop', `apop_${cellKey}.bin`]);
-                await deleteFile(directoryHandle, ['metagrid', `metacell_${cellKey}.bin`]);
-                // Explicitly check zpop folder for zpop_X_Y.bin
-                await deleteFile(directoryHandle, ['zpop', `zpop_${cellKey}.bin`]);
+        // 4. isoregiondata/datachunk_X_Y.bin
+        if (options.isoRegionData) {
+            const isoDirectory = await getDirectory(directoryHandle, 'isoregiondata');
+            if (isoDirectory) {
+                progress('Datos de región', 0, pointsToDelete.length);
+                await runBatched(
+                    pointsToDelete,
+                    async ({ x, y }) => {
+                        if (await removeEntry(isoDirectory, `datachunk_${x}_${y}.bin`, errors)) {
+                            report.isoRegionData++;
+                        }
+                    },
+                    (done) => progress('Datos de región', done, pointsToDelete.length)
+                );
             }
         }
+
+        // 5. Agregados por celda, sólo si la celda entera se queda sin chunks.
+        if (options.aggregates) {
+            progress('Agregados por celda', 0, emptiedCells.length);
+            const aggregates: [string, (cell: string) => string][] = [
+                ['chunkdata', (cell) => `chunkdata_${cell}.bin`],
+                ['apop', (cell) => `apop_${cell}.bin`],
+                ['metagrid', (cell) => `metacell_${cell}.bin`],
+                ['zpop', (cell) => `zpop_${cell}.bin`]
+            ];
+            for (const [folder, toName] of aggregates) {
+                const directory = await getDirectory(directoryHandle, folder);
+                if (!directory) {
+                    continue;
+                }
+                await runBatched(emptiedCells, async (cell) => {
+                    if (await removeEntry(directory, toName(cell), errors)) {
+                        report.aggregates++;
+                    }
+                });
+            }
+            progress('Agregados por celda', emptiedCells.length, emptiedCells.length);
+        }
+
+        // 6. Población de las celdas limpiadas sólo a medias. Sólo apop/zpop:
+        // son cachés de repoblación, el juego los regenera. No se tocan
+        // chunkdata/metagrid porque describen la estructura de la celda.
+        if (options.resetPartialPopulation && partialCells.length) {
+            progress('Repoblación de celdas parciales', 0, partialCells.length);
+            for (const [folder, prefix] of [
+                ['apop', 'apop'],
+                ['zpop', 'zpop']
+            ]) {
+                const directory = await getDirectory(directoryHandle, folder);
+                if (!directory) {
+                    continue;
+                }
+                await runBatched(partialCells, async (cell) => {
+                    if (await removeEntry(directory, `${prefix}_${cell}.bin`, errors)) {
+                        report.aggregates++;
+                    }
+                });
+            }
+            progress('Repoblación de celdas parciales', partialCells.length, partialCells.length);
+        }
+
+        // 7. vehicles.db
+        if (options.vehicles) {
+            progress('Vehículos', 0, 1);
+            report.vehicles = await deleteVehicles(directoryHandle, pointsToDelete, errors);
+            progress('Vehículos', 1, 1);
+        }
+
+        // 8. map_animals.bin — los animales salvajes no viven dentro del chunk.
+        if (options.animals) {
+            progress('Animales', 0, 1);
+            report.animals = await cleanAnimals(directoryHandle, pointsToDelete, errors);
+            progress('Animales', 1, 1);
+        }
+
+        return report;
     };
 
-    return [pointsToKeep, deletePromise().then(() => undefined)];
+    return [pointsToKeep, run()];
 };

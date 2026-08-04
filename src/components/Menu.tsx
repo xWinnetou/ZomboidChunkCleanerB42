@@ -2,7 +2,45 @@ import { Button, Checkbox, Collapse, FormControlLabel, Slider, TextField, Toolti
 import { useMemo, useState } from 'react';
 
 import { useAppContext } from '../hooks';
+import type { DeleteOptions } from '../types';
 import { isPointSelected } from '../utils';
+
+const DELETE_OPTION_LABELS: { key: keyof DeleteOptions; label: string; hint: string }[] = [
+    {
+        key: 'isoRegionData',
+        label: '🌍 Datos de región',
+        hint: 'isoregiondata/datachunk_X_Y.bin — se regeneran solos.'
+    },
+    {
+        key: 'aggregates',
+        label: '📦 Agregados de celda',
+        hint: 'chunkdata/, apop/, metagrid/, zpop/ — sólo si la celda de 32x32 chunks se queda vacía entera.'
+    },
+    {
+        key: 'vehicles',
+        label: '🚗 Vehículos',
+        hint: 'Borra de vehicles.db los vehículos que estén en los chunks eliminados. Deja una copia en vehicles.db.bak.'
+    },
+    {
+        key: 'animals',
+        label: '🐄 Animales',
+        hint:
+            'Los animales salvajes se guardan en map_animals.bin, fuera de los chunks: sin esto reaparecen ' +
+            'en la zona limpiada. Deja una copia en map_animals.bin.bak.'
+    },
+    {
+        key: 'corruptedChunks',
+        label: '💥 Chunks corruptos',
+        hint: 'Carpeta blam/: copias de chunks que fallaron el CRC, junto a sus ficheros _error.txt.'
+    },
+    {
+        key: 'resetPartialPopulation',
+        label: '♻️ Repoblar celdas parciales',
+        hint:
+            'Borra apop/ y zpop/ también en las celdas que sólo se limpian a medias, para que zombis y animales ' +
+            'se regeneren desde cero. Afecta a la celda entera (256x256 tiles), incluida la parte del refugio.'
+    }
+];
 
 interface MenuProps {
     onDelete?: () => void;
@@ -12,8 +50,10 @@ export const Menu: React.FC<MenuProps> = (props) => {
     const { onDelete } = props;
 
     const {
-        actions: { loadMapData, setZoomLevel, toggleMap, setIsSafeHouseProtectionEnabled, setSafeHousePadding },
+        actions: { loadMapData, setZoomLevel, toggleMap, setIsSafeHouseProtectionEnabled, setSafeHousePadding, setDeleteOption },
         state: {
+            deleteOptions,
+            deleteProgress,
             isMapDisplayed,
             isSelectionInverted,
             mapData,
@@ -34,25 +74,19 @@ export const Menu: React.FC<MenuProps> = (props) => {
         return mapData.filter((point) => isPointSelected(point, selection, isSelectionInverted, excludedRegions)).length;
     }, [mapData, selection, isSelectionInverted, excludedRegions]);
 
+    const isDeleting = !!deleteProgress;
+
     return (
         <div className="menu-container">
             {/* Main Actions */}
             <div className="menu-row">
-                <Button
-                    className="btn-primary"
-                    variant="contained"
-                    onClick={() => loadMapData()}
-                >
+                <Button className="btn-primary" variant="contained" disabled={isDeleting} onClick={() => loadMapData()}>
                     📂 Cargar Partida
                 </Button>
 
                 {filesToDelete > 0 ? (
-                    <Button
-                        className="btn-danger"
-                        variant="contained"
-                        onClick={() => onDelete?.()}
-                    >
-                        🗑️ Eliminar {filesToDelete} celdas
+                    <Button className="btn-danger" variant="contained" disabled={isDeleting} onClick={() => onDelete?.()}>
+                        🗑️ Eliminar {filesToDelete.toLocaleString('es-ES')} celdas
                     </Button>
                 ) : (
                     <span className="no-selection">Sin celdas seleccionadas</span>
@@ -62,13 +96,7 @@ export const Menu: React.FC<MenuProps> = (props) => {
             {/* Options Row */}
             <div className="menu-row options-row">
                 <FormControlLabel
-                    control={
-                        <Checkbox
-                            checked={isMapDisplayed}
-                            onChange={(_, value) => toggleMap(value)}
-                            size="small"
-                        />
-                    }
+                    control={<Checkbox checked={isMapDisplayed} onChange={(_, value) => toggleMap(value)} size="small" />}
                     label="🗺️ Mostrar Mapa"
                 />
                 <FormControlLabel
@@ -82,29 +110,34 @@ export const Menu: React.FC<MenuProps> = (props) => {
                     label="🛡️ Proteger Refugios"
                 />
                 <FormControlLabel
-                    control={
-                        <Checkbox
-                            checked={showInfo}
-                            onChange={(_, value) => setShowInfo(value)}
-                            size="small"
-                        />
-                    }
+                    control={<Checkbox checked={showInfo} onChange={(_, value) => setShowInfo(value)} size="small" />}
                     label="📖 Mostrar Guía"
                 />
 
                 <Tooltip title={`Zoom actual: ${Math.round(zoomLevel * 100)}%`}>
-                    <div className="zoom-display">
-                        🔍 {Math.round(zoomLevel * 100)}%
-                    </div>
+                    <div className="zoom-display">🔍 {Math.round(zoomLevel * 100)}%</div>
                 </Tooltip>
+            </div>
+
+            {/* Qué se borra además de los chunks */}
+            <div className="menu-row options-row">
+                <span className="padding-label">Además de los chunks, borrar:</span>
+                {DELETE_OPTION_LABELS.map(({ key, label, hint }) => (
+                    <Tooltip key={key} title={hint}>
+                        <FormControlLabel
+                            control={
+                                <Checkbox checked={deleteOptions[key]} onChange={(_, value) => setDeleteOption(key, value)} size="small" />
+                            }
+                            label={label}
+                        />
+                    </Tooltip>
+                ))}
             </div>
 
             {/* Safehouse Padding Slider */}
             <Collapse in={isSafeHouseProtectionEnabled}>
                 <div className="padding-control">
-                    <span className="padding-label">
-                        🛡️ Relleno de seguridad:
-                    </span>
+                    <span className="padding-label">🛡️ Relleno de seguridad:</span>
                     <Slider
                         value={safeHousePadding}
                         onChange={(_, value) => setSafeHousePadding(value as number)}
@@ -119,7 +152,9 @@ export const Menu: React.FC<MenuProps> = (props) => {
                         value={safeHousePadding}
                         onChange={(e) => {
                             const val = parseInt(e.target.value, 10);
-                            if (!isNaN(val) && val >= 0) setSafeHousePadding(val);
+                            if (!isNaN(val) && val >= 0) {
+                                setSafeHousePadding(val);
+                            }
                         }}
                         size="small"
                         sx={{ width: 70 }}
@@ -137,7 +172,8 @@ export const Menu: React.FC<MenuProps> = (props) => {
                             <div className="guide-icon">📂</div>
                             <div className="guide-text">
                                 <strong>Cargar Partida</strong>
-                                Busca tu carpeta en: <code>Users\TuNombre\Zomboid\Saves</code>
+                                Elige la carpeta de la partida, la que tiene dentro <code>map/</code> y <code>map_meta.bin</code>. En un
+                                servidor: <code>Zomboid\Saves\Multiplayer\servertest</code>.
                             </div>
                         </div>
                         <div className="guide-card">
