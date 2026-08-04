@@ -389,3 +389,28 @@ body {
 .spacer {
   flex-grow: 1;
 }
+.coord-readout {
+  font-family: 'Segoe UI', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 6px;
+  padding: 4px 10px;
+  margin-bottom: 8px;
+  display: inline-block;
+}
+
+.safehouse-label {
+  position: absolute;
+  font-family: 'Segoe UI', sans-serif;
+  font-size: 11px;
+  line-height: 14px;
+  white-space: nowrap;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 4px;
+  padding: 1px 5px;
+  pointer-events: none;
+  z-index: 3;
+}

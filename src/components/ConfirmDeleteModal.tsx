@@ -1,5 +1,5 @@
-import { Alert, Box, Button, Checkbox, FormControlLabel, Modal, Typography } from '@mui/material';
-import { useEffect, useMemo, useState } from 'react';
+import { Alert, Box, Button, Modal, Typography } from '@mui/material';
+import { useMemo } from 'react';
 
 import { useAppContext } from '../hooks';
 import { isPointSelected } from '../utils';
@@ -25,14 +25,6 @@ export const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = (props) => 
             excludedRegions
         }
     } = useAppContext();
-
-    const [isAcknowledged, setIsAcknowledged] = useState(false);
-
-    useEffect(() => {
-        if (isModalOpen) {
-            setIsAcknowledged(false);
-        }
-    }, [isModalOpen]);
 
     const filesToDelete = useMemo(() => {
         if (!selection) {
@@ -71,7 +63,7 @@ export const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = (props) => 
                 </Typography>
 
                 <Typography className="modal-warning">
-                    Esta acción no se puede deshacer. Asegúrate de tener una copia de seguridad.
+                    Esta acción no se puede deshacer. Recuerda tener el servidor parado y una copia de seguridad.
                 </Typography>
 
                 <Typography sx={{ mb: 1 }}>
@@ -81,25 +73,23 @@ export const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = (props) => 
                 {isSafeHouseProtectionEnabled ? (
                     <Alert severity={safeHouseScanMethod === 'structured' ? 'info' : 'warning'} sx={{ mb: 2 }}>
                         Protegiendo <strong>{safeHouses.length}</strong> refugio(s)
-                        {safeHouseScanMethod !== 'structured' && <> — detectados de forma aproximada, pueden faltar refugios.</>}
+                        {safeHouseScanMethod !== 'structured' && (
+                            <> — detectados de forma aproximada, pueden faltar refugios.</>
+                        )}
                     </Alert>
                 ) : (
                     <Alert severity="error" sx={{ mb: 2 }}>
-                        La protección de refugios está <strong>desactivada</strong>. Se borrarán también las bases reclamadas por jugadores.
+                        La protección de refugios está <strong>desactivada</strong>. Se borrarán también las bases
+                        reclamadas por jugadores.
                     </Alert>
                 )}
-
-                <FormControlLabel
-                    control={<Checkbox checked={isAcknowledged} onChange={(_, value) => setIsAcknowledged(value)} />}
-                    label="El servidor está parado y tengo copia de seguridad de la partida."
-                />
 
                 <div className="modal-actions">
                     <Button
                         className="btn-danger"
                         variant="contained"
                         color={isProtectionUnreliable ? 'error' : undefined}
-                        disabled={!isAcknowledged || !filesToDelete}
+                        disabled={!filesToDelete}
                         onClick={() => {
                             deleteMapData();
                             onClose?.();
